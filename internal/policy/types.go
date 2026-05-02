@@ -1,0 +1,54 @@
+// Package policy implements capability negotiation and produces ResolvedPolicy (FT2).
+package policy
+
+import "github.com/visigoth/rampart/internal/config"
+
+// ResolvedPolicy is ENT3: the merged result of agent requests intersected with
+// profile grants, plus CLI overrides. Platform-agnostic. Consumed by both
+// sandbox backends and the HTTP proxy.
+type ResolvedPolicy struct {
+	AgentName   string
+	ProfileName string
+
+	// Mode is the enforcement mode (enforcing or permissive). Comes from CLI or
+	// config.json — NOT from the agent or profile.
+	Mode string
+
+	// Filesystem capabilities.
+	FilesystemMode string   // none | read-only | read-write
+	Read           []string // Resolved absolute physical paths
+	Write          []string
+	Exec           []string
+	Workdir        string // Resolved absolute workdir path
+
+	// Network capabilities. Profile is the sole source of runtime rules (TR16).
+	NetworkMode    string   // none | filtered | full
+	AllowedDomains []string // From profile
+	ProxyACLs      []config.DomainConfig // From profile network block
+	MitmDomains    []string              // From profile
+
+	Toolchains []string
+
+	// CLI augmentations: bypass intersection (FR17).
+	CLIExtraPaths   []string
+	CLIExtraDomains []string
+
+	// Warnings produced during compile-time validation.
+	Warnings []string
+}
+
+// MergeOptions carries CLI overrides applied after intersection.
+type MergeOptions struct {
+	// Mode overrides the enforcement mode ("enforcing" | "permissive").
+	// Empty means use the default ("enforcing").
+	Mode string
+
+	// ExtraPaths are added to the policy unconditionally (--allow-path).
+	ExtraPaths []string
+
+	// ExtraDomains are added to the policy unconditionally (--allow-domain).
+	ExtraDomains []string
+
+	// Strict causes compile-time validation mismatches to be errors instead of warnings.
+	Strict bool
+}
