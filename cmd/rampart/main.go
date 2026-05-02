@@ -18,6 +18,10 @@ import (
 var versionBytes []byte
 
 func main() {
+	// Extract embedded agent profiles to ~/.local/share/rampart/agents/ on
+	// first run; skip user-modified profiles (FR61).
+	_ = MaybeExtractProfiles()
+
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
