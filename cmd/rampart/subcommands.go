@@ -65,15 +65,25 @@ With --watch, subscribe to future escalations in real time.
 	return cmd
 }
 
-// reviewCmd is the rampart review subcommand (FR58).
-// Delegates to the escape hatch triage flow (FT8 — not yet implemented).
+// reviewCmd is the rampart review subcommand (FR58, FR39).
+// Lists accumulated escape hatches from config.json and prompts the user to
+// incorporate, discard, or skip each entry.
 func reviewCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "review",
-		Short: "Review and act on pending escape hatch requests",
+		Short: "Review and act on accumulated escape hatch requests",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "review (not yet implemented)")
-			return nil
+			configPath := filepath.Join(os.Getenv("HOME"), ".config", "rampart", "config.json")
+			wd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getting working directory: %w", err)
+			}
+			gitRoot := config.FindGitRoot(wd)
+			if gitRoot == "" {
+				gitRoot = wd
+			}
+			rampartDir := filepath.Join(gitRoot, ".rampart")
+			return RunReview(configPath, rampartDir, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
 }

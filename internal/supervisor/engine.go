@@ -37,9 +37,11 @@ const (
 
 // EscalationRecord is a persisted approval stored in config.json (ENT9).
 type EscalationRecord struct {
-	Operation string    `json:"operation"` // "stat", "read", "write", "exec"
-	Pattern   string    `json:"pattern"`   // exact path or glob
-	CreatedAt time.Time `json:"created_at"`
+	Operation   string    `json:"operation"`              // "stat", "read", "write", "exec"
+	Pattern     string    `json:"pattern"`                // exact path or glob
+	CreatedAt   time.Time `json:"created_at"`
+	AgentName   string    `json:"agent_name,omitempty"`   // FR37.1
+	ProfileName string    `json:"profile_name,omitempty"` // FR37.1
 }
 
 // resolutionAction is the outcome of an in-flight escalation.
