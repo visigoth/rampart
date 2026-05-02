@@ -67,6 +67,7 @@ See 'rampart help <subcommand>' for more information.
 		reviewCmd(),
 		initCmd(),
 		testCmd(),
+		launcherCmd(),
 		docsCmd(root),
 	)
 
