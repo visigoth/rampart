@@ -11,21 +11,14 @@
 package proxy
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/big"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/elazarl/goproxy"
 )
@@ -37,14 +30,18 @@ type Config struct {
 	Rules []ProxyACLRule
 	// Logger receives audit log entries. Defaults to slog.Default() if nil.
 	Logger *slog.Logger
+	// CA is the persistent MITM CA certificate. Required when any rule has MITM: true.
+	// If nil and MITM rules exist, Start returns an error directing the user to run 'rampart init'.
+	// If nil and no MITM rules exist, the proxy runs in tunnel-only mode (TR35).
+	CA *tls.Certificate
 }
 
 // Proxy is a running HTTP forward proxy.
 type Proxy struct {
 	// Port is the loopback TCP port the proxy is listening on.
 	Port int
-	// CACertPEM is the ephemeral CA certificate in PEM format.
-	// Install this in the sandbox trust store for MITM to work.
+	// CACertPEM is the CA certificate PEM (set when CA was provided in Config).
+	// Use this to configure the sandbox trust store for MITM to work.
 	CACertPEM []byte
 
 	ln  net.Listener
@@ -58,20 +55,30 @@ func Start(cfg Config) (*Proxy, error) {
 		cfg.Logger = slog.Default()
 	}
 
-	// Generate per-session ephemeral CA for MITM (TR68.1).
-	ca, caPEM, err := generateCA()
-	if err != nil {
-		return nil, fmt.Errorf("generating MITM CA: %w", err)
+	// Validate: MITM rules require a CA (TR28).
+	var mitmAction *goproxy.ConnectAction
+	for _, r := range cfg.Rules {
+		if r.MITM {
+			if cfg.CA == nil {
+				return nil, fmt.Errorf("MITM required by ACL rules but no CA installed: run 'rampart init'")
+			}
+			mitmAction = &goproxy.ConnectAction{
+				Action:    goproxy.ConnectMitm,
+				TLSConfig: goproxy.TLSConfigFromCA(cfg.CA),
+			}
+			break
+		}
+	}
+
+	// Extract CA cert PEM for trust store injection.
+	var caPEM []byte
+	if cfg.CA != nil && cfg.CA.Leaf != nil {
+		caPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cfg.CA.Leaf.Raw})
 	}
 
 	// Build the goproxy handler.
 	gp := goproxy.NewProxyHttpServer()
 	gp.Verbose = false
-
-	mitmAction := &goproxy.ConnectAction{
-		Action:    goproxy.ConnectMitm,
-		TLSConfig: goproxy.TLSConfigFromCA(ca),
-	}
 
 	// HTTPS CONNECT handler: domain check, then MITM or tunnel (TR6, TR67, TR68).
 	gp.OnRequest().HandleConnectFunc(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
@@ -183,47 +190,3 @@ func (j *jsonReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// generateCA generates an ephemeral ECDSA CA certificate for MITM.
-// Returns the tls.Certificate and its PEM-encoded DER bytes for env injection.
-func generateCA() (*tls.Certificate, []byte, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("generating key: %w", err)
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization: []string{"Rampart Proxy"},
-			CommonName:   "Rampart Ephemeral CA",
-		},
-		NotBefore:             time.Now().Add(-1 * time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating certificate: %w", err)
-	}
-
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshaling key: %w", err)
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading key pair: %w", err)
-	}
-	if tlsCert.Leaf, err = x509.ParseCertificate(certDER); err != nil {
-		return nil, nil, fmt.Errorf("parsing leaf: %w", err)
-	}
-
-	return &tlsCert, certPEM, nil
-}

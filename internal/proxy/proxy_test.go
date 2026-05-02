@@ -11,11 +11,21 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/visigoth/rampart/internal/ca"
 	"github.com/visigoth/rampart/internal/proxy"
 )
 
-// startTestProxy starts a proxy with the given rules and returns the proxy, its URL,
-// and a cleanup function.
+// generateTestCA creates an ephemeral CA for MITM proxy tests.
+func generateTestCA(t *testing.T) *tls.Certificate {
+	t.Helper()
+	gen, err := ca.Generate()
+	if err != nil {
+		t.Fatalf("generating test CA: %v", err)
+	}
+	return gen.TLSCert()
+}
+
+// startTestProxy starts a proxy with the given rules (no MITM CA) and returns the proxy and its URL.
 func startTestProxy(t *testing.T, rules []proxy.ProxyACLRule) (*proxy.Proxy, *url.URL) {
 	t.Helper()
 	p, err := proxy.Start(proxy.Config{Rules: rules})
@@ -28,6 +38,22 @@ func startTestProxy(t *testing.T, rules []proxy.ProxyACLRule) (*proxy.Proxy, *ur
 		Host:   fmt.Sprintf("127.0.0.1:%d", p.Port),
 	}
 	return p, proxyURL
+}
+
+// startTestProxyMITM starts a proxy with MITM-enabled rules using an ephemeral test CA.
+func startTestProxyMITM(t *testing.T, rules []proxy.ProxyACLRule) (*proxy.Proxy, *url.URL, *tls.Certificate) {
+	t.Helper()
+	testCA := generateTestCA(t)
+	p, err := proxy.Start(proxy.Config{Rules: rules, CA: testCA})
+	if err != nil {
+		t.Fatalf("proxy.Start (MITM): %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+	proxyURL := &url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("127.0.0.1:%d", p.Port),
+	}
+	return p, proxyURL, testCA
 }
 
 // httpClientViaProxy returns an http.Client that routes through the proxy.
@@ -253,7 +279,7 @@ func TestProxy_MITM_AllowedPath(t *testing.T) {
 			MITM: true,
 		},
 	}
-	p, proxyURL := startTestProxy(t, rules)
+	p, proxyURL, _ := startTestProxyMITM(t, rules)
 	client := httpClientViaProxyWithCA(t, proxyURL, p.CACertPEM)
 
 	resp, err := client.Get(upstream.URL + "/allowed/resource")
@@ -283,7 +309,7 @@ func TestProxy_MITM_DeniedPath(t *testing.T) {
 			MITM: true,
 		},
 	}
-	p, proxyURL := startTestProxy(t, rules)
+	p, proxyURL, _ := startTestProxyMITM(t, rules)
 	client := httpClientViaProxyWithCA(t, proxyURL, p.CACertPEM)
 
 	resp, err := client.Get(upstream.URL + "/forbidden/resource")

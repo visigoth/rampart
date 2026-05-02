@@ -66,6 +66,7 @@ See 'rampart help <subcommand>' for more information.
 		escalationsCmd(),
 		reviewCmd(),
 		initCmd(),
+		uninstallCmd(),
 		testCmd(),
 		launcherCmd(),
 		docsCmd(root),

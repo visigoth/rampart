@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/visigoth/rampart/internal/ca"
 )
 
 // versionCmd prints the binary version and exits.
@@ -74,14 +75,64 @@ func reviewCmd() *cobra.Command {
 	}
 }
 
-// initCmd is the rampart init subcommand.
-// Scaffolds .rampart/ configs for the current project.
+// initCmd installs the rampart MITM CA certificate needed for HTTPS path filtering.
 func initCmd() *cobra.Command {
-	return &cobra.Command{
+	var rotate bool
+
+	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Scaffold .rampart/ configuration for the current project",
+		Short: "Install the rampart MITM CA certificate",
+		Long: strings.TrimSpace(`
+Install the rampart MITM CA certificate needed for HTTPS path filtering.
+
+On macOS: stores the key and certificate in Keychain and sets user trust.
+On Linux: writes ~/.config/rampart/ca.pem (0644) and ca-key.pem (0600).
+
+Use --rotate to replace an existing CA.
+`),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "init (not yet implemented)")
+			if err := ca.CheckInitAllowed(); err != nil {
+				return err
+			}
+			installed, err := ca.IsInstalled()
+			if err != nil {
+				return fmt.Errorf("checking CA status: %w", err)
+			}
+			if installed && !rotate {
+				fmt.Fprintln(cmd.OutOrStdout(), "rampart CA is already installed. Use --rotate to replace it.")
+				return nil
+			}
+			if installed {
+				if err := ca.RemoveCA(); err != nil {
+					return fmt.Errorf("removing existing CA: %w", err)
+				}
+			}
+			gen, err := ca.Generate()
+			if err != nil {
+				return fmt.Errorf("generating CA: %w", err)
+			}
+			if err := ca.SaveCA(gen.CertPEM, gen.KeyPEM); err != nil {
+				return fmt.Errorf("saving CA: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "rampart CA installed successfully.")
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&rotate, "rotate", false, "Replace an existing CA")
+	return cmd
+}
+
+// uninstallCmd removes the rampart MITM CA certificate from platform storage.
+func uninstallCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "uninstall",
+		Short: "Remove the rampart MITM CA certificate",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ca.RemoveCA(); err != nil {
+				return fmt.Errorf("removing CA: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "rampart CA removed.")
 			return nil
 		},
 	}
