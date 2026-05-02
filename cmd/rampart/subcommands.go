@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/visigoth/rampart/internal/ca"
 	"github.com/visigoth/rampart/internal/config"
+	"github.com/visigoth/rampart/internal/proxy"
 )
 
 // versionCmd prints the binary version and exits.
@@ -289,14 +290,45 @@ func presencePushCmd() *cobra.Command {
 }
 
 // testCmd is the rampart test subcommand.
-// Runs in REPL mode with permissive enforcement (FT17).
+// Loads the policy for the given agent/profile and launches a REPL where the
+// user can check read/write/exec/http verdicts without launching a real sandbox.
 func testCmd() *cobra.Command {
-	return &cobra.Command{
+	var flags *runFlags
+	cmd := &cobra.Command{
 		Use:   "test",
-		Short: "Run in test REPL mode with permissive enforcement (FT17)",
+		Short: "Launch policy test REPL (check read/write/exec/http verdicts)",
+		Long: strings.TrimSpace(`
+Launch an interactive REPL against the resolved policy for --agent/--profile.
+Commands:
+  read  <path>           check filesystem read access
+  write <path>           check filesystem write access
+  exec  <path>           check filesystem exec access
+  http  <METHOD> <URL>   check proxy ACL verdict
+  policy                 print resolved policy summary
+  exit / quit / Ctrl-D   exit
+`),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "test (not yet implemented)")
-			return nil
+			wd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getting working directory: %w", err)
+			}
+			cp, err := loadPolicy(flags, wd)
+			if err != nil {
+				return err
+			}
+			rp := cp.Policy
+			aclRules := proxy.CompileACLRules(rp.ProxyACLs, rp.MitmDomains)
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "rampart test — agent: %s  profile: %s\n", cp.AgentName, cp.ProfileName)
+			fmt.Fprintf(out, "Type 'policy' for summary, 'exit' to quit.\n\n")
+
+			if isTTY(os.Stdin) {
+				return RunInteractiveREPL(rp, aclRules, out)
+			}
+			return RunREPL(rp, aclRules, cmd.InOrStdin(), out)
 		},
 	}
+	flags = attachRunFlags(cmd)
+	return cmd
 }

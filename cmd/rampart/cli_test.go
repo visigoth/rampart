@@ -168,14 +168,32 @@ func makeTempGitRepo(t *testing.T) (string, string) {
 	return gitDir, origDir
 }
 
-func TestTestSubcommand(t *testing.T) {
+func TestTestSubcommand_NoProfile_Errors(t *testing.T) {
+	// testCmd requires --profile (or .rampart/defaults.hcl). Without it, loadPolicy
+	// returns an error — verify the error is propagated cleanly.
+	gitDir, origDir := makeTempGitRepo(t)
+	defer func() {
+		if err := os.Chdir(origDir); err != nil {
+			t.Logf("chdir back: %v", err)
+		}
+	}()
+	if err := os.Chdir(gitDir); err != nil {
+		t.Fatalf("chdir to git dir: %v", err)
+	}
+
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"test"})
-	out := &bytes.Buffer{}
-	cmd.SetOut(out)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("test subcommand: %v", err)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no profile configured, got nil")
+	}
+	if !strings.Contains(err.Error(), "profile") {
+		t.Errorf("expected profile-related error, got: %v", err)
 	}
 }
 
