@@ -24,7 +24,7 @@ func TestVersionFlagPrintsVersion(t *testing.T) {
 
 func TestRootCommandUsage(t *testing.T) {
 	cmd := rootCmd()
-	if cmd.Use != "rampart" {
-		t.Errorf("expected Use=%q, got %q", "rampart", cmd.Use)
+	if !strings.HasPrefix(cmd.Use, "rampart") {
+		t.Errorf("Use should start with %q, got %q", "rampart", cmd.Use)
 	}
 }

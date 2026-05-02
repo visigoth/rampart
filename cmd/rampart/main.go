@@ -7,6 +7,7 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"os"
 	"strings"
 
@@ -23,11 +24,57 @@ func main() {
 }
 
 func rootCmd() *cobra.Command {
+	version := strings.TrimSpace(string(versionBytes))
+
 	root := &cobra.Command{
-		Use:     "rampart",
+		Use:     "rampart [flags] -- <command> [args...]",
 		Short:   "Cross-platform sandbox wrapper for AI coding agents",
-		Version: strings.TrimSpace(string(versionBytes)),
+		Long: strings.TrimSpace(`
+rampart compiles declarative HCL policies into kernel-level sandbox rules and
+launches a target command under those restrictions.
+
+  rampart --agent coding --profile myproject -- claude
+
+Seatbelt on macOS, bubblewrap + seccomp on Linux.
+See 'rampart help <subcommand>' for more information.
+`),
+		Version:      version,
+		SilenceUsage: true,
 	}
-	root.AddCommand(docsCmd(root))
+
+	// Attach run-mode flags to the root command.
+	flags := attachRunFlags(root)
+
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		if flags.verbose {
+			fmt.Fprintf(cmd.OutOrStdout(), "rampart %s — platform: %s\n", version, currentPlatform())
+			fmt.Fprintf(cmd.OutOrStdout(), "mode: %s\n", flags.mode)
+			fmt.Fprintf(cmd.OutOrStdout(), "execution-mode: %s\n", DetectMode(flags))
+		}
+		// Orchestration (FT1→FT2→FT3→FT4/FT5) is implemented in .1.2.
+		// This task covers flag parsing and mode detection; RunE is a stub.
+		fmt.Fprintln(cmd.OutOrStdout(), "launch (not yet implemented)")
+		return nil
+	}
+
+	// Subcommands.
+	root.AddCommand(
+		versionCmd(version),
+		escalationsCmd(),
+		reviewCmd(),
+		initCmd(),
+		testCmd(),
+		docsCmd(root),
+	)
+
 	return root
+}
+
+// exitWithCode calls os.Exit with the given code. Extracted so tests can
+// replace it; the real implementation just calls os.Exit.
+var exitWithCode = func(code int) {
+	os.Exit(code)
 }
