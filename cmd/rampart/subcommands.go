@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/visigoth/rampart/internal/ca"
+	"github.com/visigoth/rampart/internal/config"
 )
 
 // versionCmd prints the binary version and exits.
@@ -75,52 +78,156 @@ func reviewCmd() *cobra.Command {
 	}
 }
 
-// initCmd installs the rampart MITM CA certificate needed for HTTPS path filtering.
+// initCmd scaffolds a .rampart/ directory in the git root and installs the MITM CA (FR60, FR60.1-4).
 func initCmd() *cobra.Command {
-	var rotate bool
+	var (
+		rotate       bool
+		projectName  string
+		installHooks bool
+		noGit        bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Install the rampart MITM CA certificate",
+		Short: "Scaffold .rampart/ config and install the MITM CA",
 		Long: strings.TrimSpace(`
-Install the rampart MITM CA certificate needed for HTTPS path filtering.
+Initialize rampart for this repository. Two things happen:
 
-On macOS: stores the key and certificate in Keychain and sets user trust.
-On Linux: writes ~/.config/rampart/ca.pem (0644) and ca-key.pem (0600).
+  1. .rampart/ is scaffolded with defaults.hcl and a conservative profile.
+  2. The MITM CA certificate is installed (Keychain on macOS, files on Linux).
 
-Use --rotate to replace an existing CA.
+On macOS, step 2 requires an interactive session — it is skipped in SSH or CI.
+Use --rotate to regenerate an existing .rampart/ scaffold or replace the CA.
+Use --install-hooks to also install tmux and shell hook templates.
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ca.CheckInitAllowed(); err != nil {
-				return err
-			}
-			installed, err := ca.IsInstalled()
+			// --- 1. Locate git root ---
+			wd, err := os.Getwd()
 			if err != nil {
-				return fmt.Errorf("checking CA status: %w", err)
+				return fmt.Errorf("getting working directory: %w", err)
 			}
-			if installed && !rotate {
-				fmt.Fprintln(cmd.OutOrStdout(), "rampart CA is already installed. Use --rotate to replace it.")
-				return nil
+			gitRoot := config.FindGitRoot(wd)
+			if gitRoot == "" && !noGit {
+				return fmt.Errorf("not in a git repository; use --no-git to scaffold without git")
 			}
-			if installed {
-				if err := ca.RemoveCA(); err != nil {
-					return fmt.Errorf("removing existing CA: %w", err)
+			if gitRoot == "" {
+				gitRoot = wd
+			}
+
+			// --- 2. Infer project name ---
+			if projectName == "" {
+				projectName = filepath.Base(gitRoot)
+			}
+
+			// --- 3. Scaffold .rampart/ ---
+			rampartDir := filepath.Join(gitRoot, ".rampart")
+			if _, err := os.Stat(rampartDir); err == nil && !rotate {
+				return fmt.Errorf(".rampart/ already exists — edit it manually or re-run with --rotate")
+			}
+			if err := scaffoldRampartDir(rampartDir, projectName); err != nil {
+				return fmt.Errorf("scaffolding .rampart/: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Created .rampart/ for project %q\n", projectName)
+			fmt.Fprintf(cmd.OutOrStdout(), "  .rampart/defaults.hcl\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "  .rampart/profiles/%s/default.hcl\n", projectName)
+
+			// --- 4. MITM CA ---
+			if err := ca.CheckInitAllowed(); err != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "Note: MITM CA skipped (%v)\n", err)
+			} else {
+				installed, err := ca.IsInstalled()
+				if err != nil {
+					return fmt.Errorf("checking CA status: %w", err)
+				}
+				if installed && !rotate {
+					fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: already installed.")
+				} else {
+					if installed {
+						if err := ca.RemoveCA(); err != nil {
+							return fmt.Errorf("removing existing CA: %w", err)
+						}
+					}
+					gen, err := ca.Generate()
+					if err != nil {
+						return fmt.Errorf("generating CA: %w", err)
+					}
+					if err := ca.SaveCA(gen.CertPEM, gen.KeyPEM); err != nil {
+						return fmt.Errorf("saving CA: %w", err)
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: installed.")
 				}
 			}
-			gen, err := ca.Generate()
-			if err != nil {
-				return fmt.Errorf("generating CA: %w", err)
+
+			// --- 5. Hooks (optional) ---
+			if installHooks {
+				fmt.Fprintln(cmd.OutOrStdout(), "Hooks: --install-hooks not yet implemented")
 			}
-			if err := ca.SaveCA(gen.CertPEM, gen.KeyPEM); err != nil {
-				return fmt.Errorf("saving CA: %w", err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "rampart CA installed successfully.")
+
+			fmt.Fprintf(cmd.OutOrStdout(), "\nEdit .rampart/profiles/%s/default.hcl to customize.\n", projectName)
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&rotate, "rotate", false, "Replace an existing CA")
+	cmd.Flags().BoolVar(&rotate, "rotate", false, "Replace existing .rampart/ scaffold and CA")
+	cmd.Flags().StringVar(&projectName, "project", "", "Project name (default: git repo basename)")
+	cmd.Flags().BoolVar(&installHooks, "install-hooks", false, "Install tmux and shell hooks")
+	cmd.Flags().BoolVar(&noGit, "no-git", false, "Scaffold without a git repository")
 	return cmd
+}
+
+// scaffoldRampartDir creates .rampart/defaults.hcl and .rampart/profiles/<project>/default.hcl
+// with conservative defaults. Existing files are overwritten (callers check existence first).
+func scaffoldRampartDir(rampartDir, projectName string) error {
+	profileDir := filepath.Join(rampartDir, "profiles", projectName)
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		return fmt.Errorf("creating profile directory: %w", err)
+	}
+
+	defaults := fmt.Sprintf(`// Rampart defaults for this repository.
+// Edit to change the active agent and profile.
+
+defaults {
+  default_agent   = "coding"
+  default_profile = %q
+}
+`, projectName+"/default")
+
+	if err := os.WriteFile(filepath.Join(rampartDir, "defaults.hcl"), []byte(defaults), 0o644); err != nil {
+		return fmt.Errorf("writing defaults.hcl: %w", err)
+	}
+
+	profile := fmt.Sprintf(`// Default rampart profile for %s.
+// Conservative: read-write access to the working directory, no network.
+// Uncomment sections to enable additional access.
+
+profile "default" {
+  // Working directory for sandboxed commands (relative to git root).
+  workdir = "."
+
+  // Read-write access to the current directory.
+  write = ["."]
+
+  // Additional read-only paths outside workdir:
+  // read = ["/etc/ssl/certs"]
+
+  // Programs allowed to execute:
+  // exec = ["/usr/bin/git", "/usr/bin/make"]
+
+  // Network access (disabled by default).
+  // Add domains to enable filtered outbound traffic:
+  // network {
+  //   domain "api.anthropic.com" {
+  //     allow "*" { paths = ["/**"] }
+  //   }
+  // }
+}
+`, projectName)
+
+	if err := os.WriteFile(filepath.Join(profileDir, "default.hcl"), []byte(profile), 0o644); err != nil {
+		return fmt.Errorf("writing profiles/%s/default.hcl: %w", projectName, err)
+	}
+
+	return nil
 }
 
 // uninstallCmd removes the rampart MITM CA certificate from platform storage.

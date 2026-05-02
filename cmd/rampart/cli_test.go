@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -132,14 +133,39 @@ func TestReviewSubcommand(t *testing.T) {
 }
 
 func TestInitSubcommand(t *testing.T) {
+	gitDir, origDir := makeTempGitRepo(t)
+	defer os.Chdir(origDir)
+	if err := os.Chdir(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
 	cmd := rootCmd()
-	cmd.SetArgs([]string{"init"})
+	cmd.SetArgs([]string{"init", "--project", "testproject"})
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	if !strings.Contains(out.String(), "testproject") {
+		t.Errorf("output should mention project name: %q", out.String())
+	}
+}
+
+// makeTempGitRepo creates a temp directory with a .git subdirectory.
+// Returns the temp dir path and the caller's original working directory.
+func makeTempGitRepo(t *testing.T) (string, string) {
+	t.Helper()
+	gitDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitDir, ".git"), 0o755); err != nil {
+		t.Fatalf("creating .git: %v", err)
+	}
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	return gitDir, origDir
 }
 
 func TestTestSubcommand(t *testing.T) {
