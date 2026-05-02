@@ -75,6 +75,7 @@ See 'rampart help <subcommand>' for more information.
 		uninstallCmd(),
 		testCmd(),
 		launcherCmd(),
+		presencePushCmd(),
 		docsCmd(root),
 	)
 

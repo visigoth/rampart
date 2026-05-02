@@ -160,7 +160,23 @@ Use --install-hooks to also install tmux and shell hook templates.
 
 			// --- 5. Hooks (optional) ---
 			if installHooks {
-				fmt.Fprintln(cmd.OutOrStdout(), "Hooks: --install-hooks not yet implemented")
+				tmuxConf, err := defaultTmuxConfPath()
+				if err != nil {
+					return fmt.Errorf("hooks: %w", err)
+				}
+				if err := installTmuxHooks(tmuxConf); err != nil {
+					return fmt.Errorf("installing tmux hooks: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "tmux hooks: installed to %s\n", tmuxConf)
+
+				shellRC, err := defaultShellRCPath()
+				if err != nil {
+					return fmt.Errorf("hooks: %w", err)
+				}
+				if err := installShellHooks(shellRC); err != nil {
+					return fmt.Errorf("installing shell hooks: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "shell hooks: installed to %s\n", shellRC)
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "\nEdit .rampart/profiles/%s/default.hcl to customize.\n", projectName)
@@ -241,6 +257,23 @@ func uninstallCmd() *cobra.Command {
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "rampart CA removed.")
 			return nil
+		},
+	}
+}
+
+// presencePushCmd is a hidden subcommand used by tmux and shell hooks to push
+// a presence event to the active session socket (FR42, FR43). It reads
+// $RAMPART_SESSION_SOCK and writes a JSON event line; silently no-ops when the
+// variable is unset or the socket doesn't exist.
+func presencePushCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "presence-push <event>",
+		Short:  "Push a presence event to the active session socket",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sock := os.Getenv("RAMPART_SESSION_SOCK")
+			return pushPresenceEvent(sock, args[0])
 		},
 	}
 }
