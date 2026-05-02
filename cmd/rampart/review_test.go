@@ -480,6 +480,131 @@ func TestRunReview_GroupsDisplayAgentAndProfile(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Integration: full round-trip with 4 records and two profiles
+// --------------------------------------------------------------------------
+
+// TestRunReview_Integration_RoundTrip is the comprehensive integration test for
+// the escalation review flow (.3.3). It sets up two profile HCL files
+// with comments and formatting, writes 4 EscalationRecords, and runs RunReview
+// with incorporate/discard/skip/incorporate actions.
+func TestRunReview_Integration_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	rampartDir := filepath.Join(dir, ".rampart")
+
+	// Profile 1: proj/default — has existing read list and inline comments.
+	const defaultProfileHCL = `// Rampart profile for project default.
+// Conservative: read-write to workdir, no network.
+profile "default" {
+  // Working directory.
+  workdir = "."
+
+  // Read-write access to workdir.
+  write = ["."]
+
+  // Common read-only paths.
+  read = ["/etc/ssl/certs"]
+}
+`
+	writeProfileHCL(t, rampartDir, "proj/default", defaultProfileHCL)
+
+	// Profile 2: web/prod — minimal, no existing list attrs.
+	const prodProfileHCL = `// Production web agent profile.
+profile "prod" {
+  workdir = "/app"
+}
+`
+	writeProfileHCL(t, rampartDir, "web/prod", prodProfileHCL)
+
+	records := []supervisor.EscalationRecord{
+		newRecord("coding", "proj/default", "read", "/usr/include"),  // [I]ncorporate
+		newRecord("coding", "proj/default", "write", "/tmp/scratch"), // [D]iscard
+		newRecord("coding", "proj/default", "exec", "/usr/bin/make"), // [S]kip
+		newRecord("browser", "web/prod", "read", "/var/log"),          // [I]ncorporate
+	}
+	configPath := writeConfigJSON(t, dir, records)
+
+	// Run review: I, D, S, I.
+	var out bytes.Buffer
+	if err := RunReview(configPath, rampartDir, strings.NewReader("i\nd\ns\ni\n"), &out); err != nil {
+		t.Fatalf("RunReview: %v", err)
+	}
+
+	// --- proj/default.hcl: comments preserved, /usr/include added to read ---
+	defaultHCLPath, defaultLabel := profileHCLPath(rampartDir, "proj/default")
+	defaultContent, err := os.ReadFile(defaultHCLPath)
+	if err != nil {
+		t.Fatalf("reading proj/default.hcl: %v", err)
+	}
+	content := string(defaultContent)
+
+	if !strings.Contains(content, "// Rampart profile for project default.") {
+		t.Error("file-level comment should be preserved")
+	}
+	if !strings.Contains(content, "// Working directory.") {
+		t.Error("inline workdir comment should be preserved")
+	}
+	if !strings.Contains(content, "// Common read-only paths.") {
+		t.Error("inline read comment should be preserved")
+	}
+
+	readVals, err := readProfileAttrValues(defaultContent, defaultHCLPath, defaultLabel, "read")
+	if err != nil {
+		t.Fatalf("readProfileAttrValues default/read: %v", err)
+	}
+	if !contains(readVals, "/usr/include") {
+		t.Errorf("read should contain /usr/include after incorporate; got %v", readVals)
+	}
+	if !contains(readVals, "/etc/ssl/certs") {
+		t.Errorf("read should still contain /etc/ssl/certs (existing); got %v", readVals)
+	}
+
+	// --- web/prod.hcl: /var/log added to read, prod comment preserved ---
+	prodHCLPath, prodLabel := profileHCLPath(rampartDir, "web/prod")
+	prodContent, err := os.ReadFile(prodHCLPath)
+	if err != nil {
+		t.Fatalf("reading web/prod.hcl: %v", err)
+	}
+	if !strings.Contains(string(prodContent), "// Production web agent profile.") {
+		t.Error("prod file-level comment should be preserved")
+	}
+	prodReadVals, err := readProfileAttrValues(prodContent, prodHCLPath, prodLabel, "read")
+	if err != nil {
+		t.Fatalf("readProfileAttrValues prod/read: %v", err)
+	}
+	if !contains(prodReadVals, "/var/log") {
+		t.Errorf("prod read should contain /var/log after incorporate; got %v", prodReadVals)
+	}
+
+	// --- config.json: discard removed /tmp/scratch; skip left /usr/bin/make ---
+	remaining := readConfigJSON(t, configPath)
+	for _, r := range remaining {
+		if r.Pattern == "/tmp/scratch" {
+			t.Error("discarded record /tmp/scratch should not be in config.json")
+		}
+	}
+	foundMake := false
+	for _, r := range remaining {
+		if r.Pattern == "/usr/bin/make" {
+			foundMake = true
+		}
+	}
+	if !foundMake {
+		t.Error("skipped record /usr/bin/make should still be in config.json")
+	}
+
+	// --- Atomic writes: no temp files should remain ---
+	if _, err := os.Stat(configPath + ".tmp"); !os.IsNotExist(err) {
+		t.Error("config .tmp should not exist after atomic write")
+	}
+	if _, err := os.Stat(defaultHCLPath + ".rampart.tmp"); !os.IsNotExist(err) {
+		t.Error("HCL .rampart.tmp should not exist after atomic write")
+	}
+	if _, err := os.Stat(prodHCLPath + ".rampart.tmp"); !os.IsNotExist(err) {
+		t.Error("prod HCL .rampart.tmp should not exist after atomic write")
+	}
+}
+
+// --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
 
