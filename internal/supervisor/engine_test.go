@@ -775,3 +775,182 @@ func TestNewEngine_Defaults(t *testing.T) {
 		t.Errorf("default Timeout: got %v, want 300s", e.cfg.Timeout)
 	}
 }
+
+// --- Tests: config.json edge cases ---
+
+func TestEngine_ConfigMissing_IsNotAnError(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "nonexistent.json")
+
+	applier := &recordingApplier{}
+	e := NewEngine(EngineConfig{
+		Enforcing:  true,
+		Applier:    applier,
+		Timeout:    200 * time.Millisecond,
+		HookDelay:  10 * time.Millisecond,
+		ConfigPath: cfgPath,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx) }()
+
+	// Engine should start without error.
+	select {
+	case err := <-done:
+		t.Fatalf("Run exited unexpectedly: %v", err)
+	case <-time.After(50 * time.Millisecond):
+		// Still running — good.
+	}
+}
+
+func TestEngine_ConfigCorrupt_RefusesToStart(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte("not json {{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	applier := &recordingApplier{}
+	e := NewEngine(EngineConfig{
+		Enforcing:  true,
+		Applier:    applier,
+		Timeout:    5 * time.Second,
+		ConfigPath: cfgPath,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := e.Run(ctx)
+	if err == nil {
+		t.Fatal("expected error from corrupt config.json, got nil")
+	}
+	if !containsAny(err.Error(), "parsing config", "startup") {
+		t.Errorf("error should mention config parsing, got: %v", err)
+	}
+}
+
+// containsAny returns true if s contains at least one of the substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if len(sub) > 0 && len(s) >= len(sub) {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func TestEngine_PersistApproval_FileMode0600(t *testing.T) {
+	applier := &recordingApplier{}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	e := NewEngine(EngineConfig{
+		Enforcing:  true,
+		Applier:    applier,
+		Timeout:    5 * time.Second,
+		HookDelay:  50 * time.Millisecond,
+		ConfigPath: cfgPath,
+	})
+	pub := &stubPublisher{visible: false}
+	e.cfg.Publisher = pub
+	startEngine(t, e)
+
+	ev := ViolationEvent{PID: 1, Syscall: "openat", Path: "/etc/passwd", Required: CapRead}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		pub.respond(SocketResponse{Action: "persist", Pattern: "/etc/passwd"})
+	}()
+	_ = e.Authorize(ctx, ev)
+
+	fi, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("config.json not written: %v", err)
+	}
+	if mode := fi.Mode().Perm(); mode != 0o600 {
+		t.Errorf("config.json mode: got %04o, want 0600", mode)
+	}
+}
+
+func TestEngine_PersistApproval_WriteFail_SessionCacheStillUpdated(t *testing.T) {
+	applier := &recordingApplier{}
+	dir := t.TempDir()
+	// Make the directory read-only so writes fail.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skip("cannot set read-only dir; skipping")
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	cfgPath := filepath.Join(dir, "config.json")
+
+	e := NewEngine(EngineConfig{
+		Enforcing:  true,
+		Applier:    applier,
+		Timeout:    5 * time.Second,
+		HookDelay:  50 * time.Millisecond,
+		ConfigPath: cfgPath,
+	})
+	pub := &stubPublisher{visible: false}
+	e.cfg.Publisher = pub
+	startEngine(t, e)
+
+	ev := ViolationEvent{PID: 1, Syscall: "openat", Path: "/etc/ssh/sshd_config", Required: CapRead}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		pub.respond(SocketResponse{Action: "persist", Pattern: "/etc/ssh/*"})
+	}()
+
+	// Authorize should still return Allow even though disk write fails.
+	d := e.Authorize(ctx, ev)
+	if d != Allow {
+		t.Errorf("expected Allow despite persist failure, got %v", d)
+	}
+
+	// Session cache should have the entry.
+	e.cacheMu.RLock()
+	found := false
+	for _, entry := range e.sessionCache {
+		if entry.pattern == "/etc/ssh/*" {
+			found = true
+		}
+	}
+	e.cacheMu.RUnlock()
+	if !found {
+		t.Error("session cache should contain the entry even when disk write fails")
+	}
+}
+
+func TestEngine_ConcurrentCacheReads_Safe(t *testing.T) {
+	applier := &recordingApplier{}
+	e := makeEngine(t, applier)
+	startEngine(t, e)
+
+	// Seed the session cache.
+	e.cacheMu.Lock()
+	for i := 0; i < 50; i++ {
+		e.sessionCache = append(e.sessionCache, cacheEntry{cap: CapRead, pattern: "/etc/ssh/*"})
+	}
+	e.cacheMu.Unlock()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ev := ViolationEvent{Path: "/etc/ssh/sshd_config", Required: CapRead}
+			_, _ = e.checkCache(ev)
+		}()
+	}
+	wg.Wait() // race detector catches any violations
+}

@@ -233,10 +233,11 @@ func (e *Engine) Authorize(ctx context.Context, ev ViolationEvent) Decision {
 }
 
 // Run starts the reactor goroutine. Blocks until ctx is cancelled.
-// Loads persisted approvals from config.json at startup.
+// Loads persisted approvals from config.json at startup; returns an error if
+// config.json exists but cannot be parsed (corrupt file refuses startup).
 func (e *Engine) Run(ctx context.Context) error {
 	if err := e.loadPersistedRecs(); err != nil {
-		e.cfg.Logger.Warn("could not load persisted approvals", "err", err)
+		return fmt.Errorf("startup: %w", err)
 	}
 	for {
 		select {
