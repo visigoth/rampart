@@ -54,8 +54,10 @@ See 'rampart help <subcommand>' for more information.
 			fmt.Fprintf(cmd.OutOrStdout(), "mode: %s\n", flags.mode)
 			fmt.Fprintf(cmd.OutOrStdout(), "execution-mode: %s\n", DetectMode(flags))
 		}
-		// Orchestration (FT1→FT2→FT3→FT4/FT5) is implemented in .1.2.
-		// This task covers flag parsing and mode detection; RunE is a stub.
+		if flags.dryRun {
+			return runDryRun(flags, cmd.OutOrStdout())
+		}
+		// Full orchestration (FT1→FT2→FT3→FT4/FT5) is implemented in .1.2.
 		fmt.Fprintln(cmd.OutOrStdout(), "launch (not yet implemented)")
 		return nil
 	}
