@@ -24,64 +24,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Capability represents the access level required by a filtered syscall
-// (TR152.1). The hierarchy is: exec → read → stat; write → read → stat.
-type Capability int
-
-const (
-	CapStat  Capability = iota // path metadata only
-	CapRead                    // open for reading
-	CapWrite                   // create, modify, delete
-	CapExec                    // execute binary
-)
-
-func (c Capability) String() string {
-	switch c {
-	case CapStat:
-		return "stat"
-	case CapRead:
-		return "read"
-	case CapWrite:
-		return "write"
-	case CapExec:
-		return "exec"
-	default:
-		return fmt.Sprintf("capability(%d)", int(c))
-	}
-}
-
-// ViolationEvent describes a filtered syscall that the AuthEngine must decide.
-type ViolationEvent struct {
-	PID      uint32
-	Syscall  string
-	Path     string     // resolved absolute path
-	Required Capability // minimum capability needed
-	NotifID  uint64     // for the supervisor to correlate responses
-}
-
-// Decision indicates whether the AuthEngine permits or denies the syscall.
-type Decision bool
-
-const (
-	Allow Decision = true
-	Deny  Decision = false
-)
-
-// AuthEngine is consulted for every intercepted syscall (TR82, FT12 soft-dep).
-type AuthEngine interface {
-	Authorize(ctx context.Context, ev ViolationEvent) Decision
-}
-
-// DenyAllEngine denies every syscall. Useful as a safe default.
-type DenyAllEngine struct{}
-
-func (DenyAllEngine) Authorize(_ context.Context, _ ViolationEvent) Decision { return Deny }
-
-// AllowAllEngine allows every syscall. Useful for permissive mode / tests.
-type AllowAllEngine struct{}
-
-func (AllowAllEngine) Authorize(_ context.Context, _ ViolationEvent) Decision { return Allow }
-
 // syscallProfile describes how to extract (dirfd, path-ptr, open-flags) from
 // the notification args and what capability the syscall requires.
 type syscallProfile struct {
