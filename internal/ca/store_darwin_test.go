@@ -4,18 +4,40 @@ package ca
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
 // Darwin Keychain security tests (TR20, TR29).
 // These require an interactive macOS session with Keychain access.
-// They are skipped in headless/CI environments.
+// They are skipped in headless/CI environments and when the test binary
+// lacks the keychain-access-groups entitlement (e.g. plain `go test`).
 
 func skipIfHeadlessDarwin(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CI") != "" || !hasGUISession() {
 		t.Skip("skipping Keychain test: no GUI session (headless/CI)")
 	}
+	if !hasKeychainEntitlement(t) {
+		t.Skip("skipping Keychain test: test binary lacks keychain-access-groups entitlement (run via signed `rampart` binary instead)")
+	}
+}
+
+// hasKeychainEntitlement returns true if the running test binary is codesigned
+// with the keychain-access-groups entitlement. Without it, SecItem* calls fail
+// with errSecMissingEntitlement (-34018).
+func hasKeychainEntitlement(t *testing.T) bool {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command("codesign", "-d", "--entitlements", "-", exe).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "keychain-access-groups")
 }
 
 // TestSaveCA_KeyNeverOnDisk verifies that after SaveCA the private key is not

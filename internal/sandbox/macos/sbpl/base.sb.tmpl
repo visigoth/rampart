@@ -47,6 +47,10 @@
 (allow file-read*
     (subpath (param "HOME")))
 
+;; Working directory needs read+write — agents read and modify project files.
+(allow file-read* file-write*
+    (subpath (param "WORKDIR")))
+
 ;; Claude binary dir (CLAUDE_BIN_DIR) needs read+exec.
 (allow file-read* process-exec
     (subpath (param "CLAUDE_BIN_DIR")))

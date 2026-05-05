@@ -14,12 +14,26 @@ import (
 	"github.com/visigoth/rampart/internal/session"
 )
 
+// tmpSock returns a unix-socket path short enough to fit in macOS's 104-byte
+// sun_path limit. t.TempDir() on darwin returns paths under /var/folders/...
+// that, combined with a long test name, blow past the limit and yield
+// "connect: invalid argument" at dial time. /tmp keeps the path under ~30 chars.
+func tmpSock(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "rmpt")
+	if err != nil {
+		t.Fatalf("mkdir tmp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s")
+}
+
 // startServer starts a Server with a temp socket path and returns it plus
 // a cancel function. The server runs in the background.
 func startServer(t *testing.T, cfg session.ServerConfig) *session.Server {
 	t.Helper()
 	if cfg.SocketPath == "" {
-		cfg.SocketPath = filepath.Join(t.TempDir(), "test.sock")
+		cfg.SocketPath = tmpSock(t)
 	}
 	srv := session.NewServer(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,7 +101,7 @@ func (cs *connScanner) readJSON(t *testing.T, v any) {
 }
 
 func TestServer_SocketCreated(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	if _, err := os.Stat(sockPath); err != nil {
@@ -96,7 +110,7 @@ func TestServer_SocketCreated(t *testing.T) {
 }
 
 func TestServer_SocketRemovedOnShutdown(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	cfg := session.ServerConfig{SocketPath: sockPath}
 	srv := session.NewServer(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,7 +135,7 @@ func TestServer_SocketRemovedOnShutdown(t *testing.T) {
 }
 
 func TestServer_AcceptsMultipleSubscribers(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	c1 := connectClient(t, sockPath)
@@ -132,7 +146,7 @@ func TestServer_AcceptsMultipleSubscribers(t *testing.T) {
 }
 
 func TestServer_PresenceEvent_FocusIn(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -147,7 +161,7 @@ func TestServer_PresenceEvent_FocusIn(t *testing.T) {
 }
 
 func TestServer_PresenceEvent_FocusOut(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{
 		SocketPath: sockPath,
 		Presence:   session.PresenceState{PaneVisible: true},
@@ -163,7 +177,7 @@ func TestServer_PresenceEvent_FocusOut(t *testing.T) {
 }
 
 func TestServer_QueryList_EmptyWithNoLister(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -187,7 +201,7 @@ type stubLister struct {
 func (s *stubLister) ListEscalations() []session.OutboundEscalation { return s.items }
 
 func TestServer_QueryList_WithLister(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	lister := &stubLister{items: []session.OutboundEscalation{
 		{ID: 1, Operation: "read", Resource: "/etc/ssh/sshd_config", Status: "pending"},
 	}}
@@ -217,7 +231,7 @@ func (h *stubCommandHandler) HandleCommand(action string, id int64, pattern stri
 }
 
 func TestServer_Command_Approve(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	handler := &stubCommandHandler{}
 	startServer(t, session.ServerConfig{SocketPath: sockPath, Commands: handler})
 
@@ -243,7 +257,7 @@ func TestServer_Command_Approve(t *testing.T) {
 }
 
 func TestServer_Command_NoHandler_ReturnsNotFound(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -262,7 +276,7 @@ func TestServer_Command_NoHandler_ReturnsNotFound(t *testing.T) {
 }
 
 func TestServer_PushEscalation_ToWatchers(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -292,7 +306,7 @@ func TestServer_PushEscalation_ToWatchers(t *testing.T) {
 }
 
 func TestServer_SubscriberDisconnect_NoPanic(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "rampart.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)

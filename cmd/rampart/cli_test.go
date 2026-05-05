@@ -133,6 +133,7 @@ func TestReviewSubcommand(t *testing.T) {
 }
 
 func TestInitSubcommand(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {

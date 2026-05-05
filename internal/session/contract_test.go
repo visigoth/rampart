@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,7 @@ import (
 // --- API2.1: Presence Event (external → supervisor) ---
 
 func TestContractAPI21_FocusIn_UpdatesPresenceState(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -39,7 +38,7 @@ func TestContractAPI21_FocusIn_UpdatesPresenceState(t *testing.T) {
 }
 
 func TestContractAPI21_FocusOut_UpdatesPresenceState(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{
 		SocketPath: sockPath,
 		Presence:   session.PresenceState{PaneVisible: true},
@@ -56,7 +55,7 @@ func TestContractAPI21_FocusOut_UpdatesPresenceState(t *testing.T) {
 }
 
 func TestContractAPI21_SessionStart_SSH_UpdatesPresenceState(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -74,7 +73,7 @@ func TestContractAPI21_SessionStart_SSH_UpdatesPresenceState(t *testing.T) {
 }
 
 func TestContractAPI21_AllEventTypes_ParseWithoutError(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 	conn := connectClient(t, sockPath)
 
@@ -97,7 +96,7 @@ func TestContractAPI21_AllEventTypes_ParseWithoutError(t *testing.T) {
 // --- API2.2: Escalation Query (external → supervisor) ---
 
 func TestContractAPI22_ListQuery_ReturnsResponseType(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -117,7 +116,7 @@ func TestContractAPI22_ListQuery_ReturnsResponseType(t *testing.T) {
 }
 
 func TestContractAPI22_ListQuery_EscalationSchema(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	lister := &stubLister{items: []session.OutboundEscalation{
 		{
 			ID:        1,
@@ -157,7 +156,7 @@ func TestContractAPI22_ListQuery_EscalationSchema(t *testing.T) {
 // --- API2.3: Escalation Command (external → supervisor) ---
 
 func TestContractAPI23_ApproveCommand_Schema(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	handler := &stubCommandHandler{}
 	startServer(t, session.ServerConfig{SocketPath: sockPath, Commands: handler})
 
@@ -187,7 +186,7 @@ func TestContractAPI23_ApproveCommand_Schema(t *testing.T) {
 }
 
 func TestContractAPI23_DenyCommand_Schema(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	handler := &denyHandler{}
 	startServer(t, session.ServerConfig{SocketPath: sockPath, Commands: handler})
 
@@ -206,7 +205,7 @@ func TestContractAPI23_DenyCommand_Schema(t *testing.T) {
 }
 
 func TestContractAPI23_PersistCommand_Schema(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	handler := &persistHandler{}
 	startServer(t, session.ServerConfig{SocketPath: sockPath, Commands: handler})
 
@@ -224,7 +223,7 @@ func TestContractAPI23_PersistCommand_Schema(t *testing.T) {
 // --- API2.4: Query Response (supervisor → external) round-trip ---
 
 func TestContractRoundTrip_QueryListResponse(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	lister := &stubLister{items: []session.OutboundEscalation{
 		{ID: 10, Operation: "connect", Resource: "evil.com:443", Status: "denied", Timestamp: "2026-04-29T10:16:00Z"},
 	}}
@@ -269,7 +268,7 @@ func TestContractRoundTrip_QueryListResponse(t *testing.T) {
 // --- API2.5: Command Acknowledgment (supervisor → external) round-trip ---
 
 func TestContractRoundTrip_CommandAck_FieldNames(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	handler := &stubCommandHandler{}
 	startServer(t, session.ServerConfig{SocketPath: sockPath, Commands: handler})
 
@@ -300,7 +299,7 @@ func TestContractRoundTrip_CommandAck_FieldNames(t *testing.T) {
 }
 
 func TestContractAPI25_NotFoundResult(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	// No Commands handler → returns "not_found".
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
@@ -321,7 +320,7 @@ func TestContractAPI25_NotFoundResult(t *testing.T) {
 // --- Schema mismatch / forward-compatibility ---
 
 func TestContractSchemaCompat_ExtraFields_Ignored(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 	conn := connectClient(t, sockPath)
 
@@ -336,7 +335,7 @@ func TestContractSchemaCompat_ExtraFields_Ignored(t *testing.T) {
 }
 
 func TestContractSchemaCompat_UnknownMessageType_HandledGracefully(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -355,7 +354,7 @@ func TestContractSchemaCompat_UnknownMessageType_HandledGracefully(t *testing.T)
 }
 
 func TestContractSchemaCompat_MissingEventField_HandledGracefully(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 	conn := connectClient(t, sockPath)
 
@@ -366,7 +365,7 @@ func TestContractSchemaCompat_MissingEventField_HandledGracefully(t *testing.T) 
 }
 
 func TestContractSchemaCompat_MissingEscalationID_CommandNotFound(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -385,7 +384,7 @@ func TestContractSchemaCompat_MissingEscalationID_CommandNotFound(t *testing.T) 
 // --- NDJSON framing ---
 
 func TestContractNDJSON_MultipleMessagesOnOneConnection(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -405,7 +404,7 @@ func TestContractNDJSON_MultipleMessagesOnOneConnection(t *testing.T) {
 }
 
 func TestContractNDJSON_MessagesSeparatedByNewlines(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -435,7 +434,7 @@ func TestContractNDJSON_MessagesSeparatedByNewlines(t *testing.T) {
 // --- API2.6: Push Escalation Event (supervisor → watchers) round-trip ---
 
 func TestContractRoundTrip_PushEscalationToWatcher(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	conn := connectClient(t, sockPath)
@@ -479,7 +478,7 @@ func TestContractRoundTrip_PushEscalationToWatcher(t *testing.T) {
 }
 
 func TestContractRoundTrip_PushNotSentToNonWatchers(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "test.sock")
+	sockPath := tmpSock(t)
 	srv := startServer(t, session.ServerConfig{SocketPath: sockPath})
 
 	// Connect but do NOT send "watch".

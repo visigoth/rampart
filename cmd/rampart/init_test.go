@@ -67,6 +67,7 @@ func TestScaffoldRampartDir_ScaffoldedHCLParses(t *testing.T) {
 // --- initCmd integration tests ---
 
 func TestInitCmd_ScaffoldsRampartDir(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {
@@ -94,6 +95,7 @@ func TestInitCmd_ScaffoldsRampartDir(t *testing.T) {
 }
 
 func TestInitCmd_InfersProjectFromGitBasename(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	// Git root dir name is used as the project name when --project is not set.
 	// We create a git dir with a known name under a temp parent.
 	parent := t.TempDir()
@@ -151,6 +153,7 @@ func TestInitCmd_RefusesIfAlreadyInitialized(t *testing.T) {
 }
 
 func TestInitCmd_RotateOverwritesExistingScaffold(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {
@@ -202,6 +205,7 @@ func TestInitCmd_NotInGitRepo_Errors(t *testing.T) {
 }
 
 func TestInitCmd_NoGitFlag_SucceedsOutsideRepo(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	nonGitDir := t.TempDir()
 	origDir, _ := os.Getwd()
 	defer os.Chdir(origDir)

@@ -186,6 +186,7 @@ func TestInstallShellHooks_WritesHookSnippet(t *testing.T) {
 // --- Tests: initCmd --install-hooks ---
 
 func TestInitCmd_InstallHooks_WritesHookFiles(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {
@@ -228,6 +229,7 @@ func TestInitCmd_InstallHooks_WritesHookFiles(t *testing.T) {
 }
 
 func TestInitCmd_InstallHooks_Idempotent(t *testing.T) {
+	skipIfNoKeychainEntitlement(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {
@@ -273,8 +275,7 @@ func TestPresencePushCmd_NoopWhenSockNotSet(t *testing.T) {
 }
 
 func TestPresencePushCmd_SendsEventToSocket(t *testing.T) {
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "test.sock")
+	sockPath := tmpSock(t)
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -332,8 +333,7 @@ func TestPresencePushCmd_SilentIfSocketMissing(t *testing.T) {
 // --- Tests: pushPresenceEvent ---
 
 func TestPushPresenceEvent_WritesJSONToSocket(t *testing.T) {
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "test.sock")
+	sockPath := tmpSock(t)
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
