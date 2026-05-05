@@ -145,13 +145,23 @@ func TestCompileSBPL_EscapesQuotesInPaths(t *testing.T) {
 	}
 }
 
-func TestCompileSBPL_TestModeSuppressesSIGKILL(t *testing.T) {
-	rp := &policy.ResolvedPolicy{}
-	normal, _ := CompileSBPL(rp, false)
-	testMode, _ := CompileSBPL(rp, true)
-
-	_ = normal // future: add SIGKILL assertion when rules are refined
-	_ = testMode
+func TestCompileSBPL_BaselineDenyDefault(t *testing.T) {
+	// SIGKILL on policy violations is enforced at the supervisor layer (FT7),
+	// not in SBPL — see template comment. Both modes therefore use plain
+	// (deny default) which returns EPERM on disallowed operations.
+	for _, testMode := range []bool{false, true} {
+		rp := &policy.ResolvedPolicy{}
+		out, err := CompileSBPL(rp, testMode)
+		if err != nil {
+			t.Fatalf("CompileSBPL(testMode=%v): %v", testMode, err)
+		}
+		if strings.Contains(out, "send-signal SIGKILL") {
+			t.Errorf("testMode=%v: SBPL must not embed SIGKILL deny rules; got:\n%s", testMode, out)
+		}
+		if !strings.Contains(out, "(deny default)") {
+			t.Errorf("testMode=%v: SBPL must keep (deny default) baseline; got:\n%s", testMode, out)
+		}
+	}
 }
 
 func TestCompileSBPL_LargePolicyReasonableSize(t *testing.T) {

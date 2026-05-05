@@ -2,7 +2,13 @@
 ;; Parameters injected via sandbox-exec -D: HOME, WORKDIR, TMPDIR, CLAUDE_BIN_DIR.
 (version 1)
 
-;; Baseline: deny everything, then carve out what is needed.
+;; Baseline: deny everything, then carve out what is needed. (deny default)
+;; returns EPERM on disallowed operations; hard kill of the child on policy
+;; violations (FR23) is enforced at the supervisor layer (FT7) by reading
+;; sandbox log entries and signalling the child — Seatbelt's kill modifier
+;; cannot be combined with a deny-default baseline because the kill
+;; predicate fires regardless of subsequent allow rules, which would
+;; prevent re-permitting policy-allowed paths.
 (deny default)
 
 ;; Allow the process to read its own process state.
@@ -19,6 +25,10 @@
 (allow sysctl-read)
 (allow file-read-metadata)
 
+;; DTrace helper — every macOS process startup ioctl()'s and write()'s here.
+(allow file-ioctl (literal "/dev/dtracehelper"))
+(allow file-write-data (literal "/dev/dtracehelper"))
+
 ;; System library and framework reads.
 (allow file-read*
     (subpath "/usr/lib")
@@ -26,10 +36,12 @@
     (subpath "/System/Library")
     (subpath "/Library/Apple")
     (subpath "/private/var/db/dyld")
-    (subpath "/private/var/db/timezone"))
+    (subpath "/private/var/db/timezone")
+    (subpath "/System/Volumes/Preboot/Cryptexes"))
 
 ;; Proc/dev/etc reads.
 (allow file-read*
+    (literal "/")
     (subpath "/dev")
     (literal "/etc")
     (literal "/tmp")
