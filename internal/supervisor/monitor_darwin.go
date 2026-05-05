@@ -73,7 +73,7 @@ func (realLogReader) QuerySandboxLogs(pid int) ([]string, error) {
 		"log", "show",
 		"--last", "10s",
 		"--predicate",
-		fmt.Sprintf(`subsystem == "com.apple.sandbox" AND process == "kernel_task" AND eventMessage CONTAINS "%d"`, pid),
+		fmt.Sprintf(`subsystem == "com.apple.sandbox.reporting" AND eventMessage CONTAINS "%d"`, pid),
 		"--info",
 		"--style", "compact",
 	}
