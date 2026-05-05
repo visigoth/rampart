@@ -18,9 +18,9 @@ const (
 	keyMode      = 0600
 )
 
-// SaveCA persists the CA cert and private key to ~/.config/rampart/ (TR21, TR23).
+// saveCA persists the CA cert and private key to ~/.config/rampart/ (TR21, TR23).
 // Directory is created with mode 0700; ca.pem is 0644, ca-key.pem is 0600.
-func SaveCA(certPEM, keyPEM []byte) error {
+func saveCA(certPEM, keyPEM []byte) error {
 	dir, err := DefaultConfigDir()
 	if err != nil {
 		return err
@@ -40,9 +40,9 @@ func SaveCA(certPEM, keyPEM []byte) error {
 	return nil
 }
 
-// LoadCA reads the CA from ~/.config/rampart/ and returns it ready for proxy use.
+// loadCA reads the CA from ~/.config/rampart/ and returns it ready for proxy use.
 // Returns ErrNotInstalled if the CA files are missing.
-func LoadCA() (*CA, error) {
+func loadCA() (*CA, error) {
 	dir, err := DefaultConfigDir()
 	if err != nil {
 		return nil, err
@@ -79,8 +79,8 @@ func LoadCA() (*CA, error) {
 	}, nil
 }
 
-// IsInstalled reports whether the CA is present on disk.
-func IsInstalled() (bool, error) {
+// isInstalled reports whether the CA is present on disk.
+func isInstalled() (bool, error) {
 	dir, err := DefaultConfigDir()
 	if err != nil {
 		return false, err
@@ -92,8 +92,8 @@ func IsInstalled() (bool, error) {
 	return err == nil, err
 }
 
-// RemoveCA deletes the CA cert and key files from ~/.config/rampart/.
-func RemoveCA() error {
+// removeCA deletes the CA cert and key files from ~/.config/rampart/.
+func removeCA() error {
 	dir, err := DefaultConfigDir()
 	if err != nil {
 		return err

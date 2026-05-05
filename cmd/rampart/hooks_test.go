@@ -186,7 +186,7 @@ func TestInstallShellHooks_WritesHookSnippet(t *testing.T) {
 // --- Tests: initCmd --install-hooks ---
 
 func TestInitCmd_InstallHooks_WritesHookFiles(t *testing.T) {
-	skipIfNoKeychainEntitlement(t)
+	useMemCAStore(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {
@@ -229,7 +229,7 @@ func TestInitCmd_InstallHooks_WritesHookFiles(t *testing.T) {
 }
 
 func TestInitCmd_InstallHooks_Idempotent(t *testing.T) {
-	skipIfNoKeychainEntitlement(t)
+	useMemCAStore(t)
 	gitDir, origDir := makeTempGitRepo(t)
 	defer os.Chdir(origDir)
 	if err := os.Chdir(gitDir); err != nil {

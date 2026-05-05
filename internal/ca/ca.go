@@ -38,6 +38,22 @@ import (
 // ErrNotInstalled is returned by LoadCA when no CA has been installed.
 var ErrNotInstalled = errors.New("rampart CA not installed: run 'rampart init' to set it up")
 
+// CA storage is dispatched through these function variables so tests can swap
+// in an in-memory store. Production code reads/writes the platform-specific
+// store (Keychain on darwin, ~/.config/rampart on linux) via the default
+// implementations defined in store_<os>.go.
+var (
+	// SaveCA persists the CA cert and private key to platform storage.
+	SaveCA = saveCA
+	// LoadCA retrieves the CA from platform storage. Returns ErrNotInstalled
+	// if no CA has been saved.
+	LoadCA = loadCA
+	// IsInstalled reports whether a CA is currently in platform storage.
+	IsInstalled = isInstalled
+	// RemoveCA deletes the CA cert and private key from platform storage.
+	RemoveCA = removeCA
+)
+
 // CA is the runtime representation of the rampart MITM certificate authority.
 // Obtain via LoadCA; use TLSCert for proxy integration.
 type CA struct {

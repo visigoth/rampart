@@ -10,10 +10,10 @@ import (
 	"fmt"
 )
 
-// SaveCA imports the CA cert and private key into the user's login Keychain (TR20, TR23).
+// saveCA imports the CA cert and private key into the user's login Keychain (TR20, TR23).
 // The private key never touches disk — it is created in memory and imported via CGo.
 // This call may prompt for Keychain authentication on macOS.
-func SaveCA(certPEM, keyPEM []byte) error {
+func saveCA(certPEM, keyPEM []byte) error {
 	// Parse key and build x9.63 format for SecKeyCreateWithData.
 	// x9.63 P-256: 0x04 | X(32) | Y(32) | D(32) = 97 bytes.
 	keyBlock, _ := decodePEM(keyPEM)
@@ -55,9 +55,9 @@ func SaveCA(certPEM, keyPEM []byte) error {
 	return nil
 }
 
-// LoadCA retrieves the CA from the user's Keychain. The private key stays in Keychain;
+// loadCA retrieves the CA from the user's Keychain. The private key stays in Keychain;
 // signing operations use SecKeyCreateSignature via CGo (TR29).
-func LoadCA() (*CA, error) {
+func loadCA() (*CA, error) {
 	certDER, err := cgoLoadCertDER()
 	if err != nil {
 		return nil, err
@@ -91,13 +91,13 @@ func LoadCA() (*CA, error) {
 	return &CA{Cert: cert, CertPEM: certPEM, tlsCert: tlsCert}, nil
 }
 
-// IsInstalled reports whether the CA cert is present in the Keychain.
-func IsInstalled() (bool, error) {
+// isInstalled reports whether the CA cert is present in the Keychain.
+func isInstalled() (bool, error) {
 	return cgoIsInstalled(), nil
 }
 
-// RemoveCA removes the CA cert, private key, and trust settings from Keychain (TR26).
-func RemoveCA() error {
+// removeCA removes the CA cert, private key, and trust settings from Keychain (TR26).
+func removeCA() error {
 	certSt := cgoRemoveCert()
 	keySt := cgoRemoveKey()
 	if certSt != errSecSuccess() && certSt != errSecItemNotFound() {
