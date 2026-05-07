@@ -13,6 +13,7 @@ import (
 	"github.com/visigoth/rampart/internal/proxy"
 	"github.com/visigoth/rampart/internal/session"
 	"github.com/visigoth/rampart/internal/supervisor"
+	"github.com/visigoth/rampart/internal/tmux"
 )
 
 // runLaunch performs the FT13 wiring: load+compile policy, build a
@@ -82,10 +83,23 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 		fatal = append(fatal, engineSub)
 	}
 
+	// FT10 / TR117: tmux UI pane. Recoverable — tmux missing or split-window
+	// failure logs and degrades to interactive-direct, never ends the session.
+	var recoverable []supervisor.Subsystem
+	if DetectMode(flags) == ModeInteractiveTmux {
+		recoverable = append(recoverable, &tmuxPaneSubsystem{
+			cfg: tmux.PaneConfig{
+				PaneCommand: "rampart escalations --watch",
+				NewSession:  flags.newSession,
+				NewWindow:   flags.newWindow,
+			},
+		})
+	}
+
 	cfg := supervisor.Config{
 		Cmd:                   cmd,
 		FatalSubsystems:       fatal,
-		RecoverableSubsystems: nil,
+		RecoverableSubsystems: recoverable,
 		Verbose:               flags.verbose,
 		PostStartHook:         postStart,
 	}
