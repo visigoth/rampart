@@ -353,6 +353,87 @@ func TestRun_Verbose_LogsChildStart(t *testing.T) {
 	}
 }
 
+// --- PostStartHook ---
+
+func TestRun_PostStartHook_ReceivesChildPID(t *testing.T) {
+	buf := discardLogger()
+	cfg := makeConfig(trueCmd(t), buf)
+
+	var seenPID atomic.Int32
+	cfg.PostStartHook = func(pid int) ([]Subsystem, error) {
+		seenPID.Store(int32(pid))
+		return nil, nil
+	}
+
+	result := Run(context.Background(), cfg)
+
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code: got %d, want 0 (err: %v)", result.ExitCode, result.Err)
+	}
+	if seenPID.Load() <= 0 {
+		t.Errorf("PostStartHook saw pid=%d, expected positive child PID", seenPID.Load())
+	}
+}
+
+func TestRun_PostStartHook_SubsystemsAreLaunched(t *testing.T) {
+	buf := discardLogger()
+	// Child sleeps so the post-start subsystem actually has time to run.
+	cfg := makeConfig(sleepCmd(150*time.Millisecond), buf)
+
+	mon := newFake("post-start-monitor")
+	cfg.PostStartHook = func(pid int) ([]Subsystem, error) {
+		return []Subsystem{mon}, nil
+	}
+
+	result := Run(context.Background(), cfg)
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code: got %d, want 0 (err: %v)", result.ExitCode, result.Err)
+	}
+	if !mon.runCalled.Load() {
+		t.Error("post-start subsystem was not started")
+	}
+}
+
+func TestRun_PostStartHook_ErrorKillsChildAndEndsSession(t *testing.T) {
+	buf := discardLogger()
+	// Child sleeps for 10s; the hook returns an error so the supervisor must
+	// kill it rather than wait it out.
+	cfg := makeConfig(sleepCmd(10*time.Second), buf)
+	cfg.PostStartHook = func(pid int) ([]Subsystem, error) {
+		return nil, fmt.Errorf("monitor refused pid %d", pid)
+	}
+
+	start := time.Now()
+	result := Run(context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	if result.ExitCode == 0 {
+		t.Error("expected non-zero exit code when post-start hook errors")
+	}
+	if result.Err == nil {
+		t.Error("expected non-nil Err when post-start hook errors")
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("expected fast exit on hook error, took %v", elapsed)
+	}
+}
+
+// --- Engine satisfies Subsystem ---
+
+func TestEngine_ImplementsSubsystem(t *testing.T) {
+	// Compile-time check via type assertion.
+	var _ Subsystem = (*Engine)(nil)
+
+	e := NewEngine(EngineConfig{Applier: noopApplier{}})
+	if e.Name() != "auth-engine" {
+		t.Errorf("Engine.Name(): got %q, want %q", e.Name(), "auth-engine")
+	}
+}
+
+type noopApplier struct{}
+
+func (noopApplier) Apply(ViolationEvent, bool) error { return nil }
+
 // --- ErrorPhase constants ---
 
 func TestStartupPhase_Constants(t *testing.T) {

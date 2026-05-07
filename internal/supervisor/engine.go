@@ -217,6 +217,10 @@ func NewEngine(cfg EngineConfig) *Engine {
 	}
 }
 
+// Name implements Subsystem so the engine can be registered as a fatal
+// subsystem in supervisor.Config.
+func (e *Engine) Name() string { return "auth-engine" }
+
 // Authorize submits a violation event and blocks until a decision is reached (TR69).
 // Implements AuthEngine. Safe for concurrent calls from multiple goroutines.
 func (e *Engine) Authorize(ctx context.Context, ev ViolationEvent) Decision {

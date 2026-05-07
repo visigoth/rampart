@@ -65,14 +65,29 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	if err != nil {
 		return 1, fmt.Errorf("session socket path: %w", err)
 	}
-	srv := session.NewServer(session.ServerConfig{SocketPath: socketPath})
+	bridge := newSessionBridge()
+	srv := session.NewServer(session.ServerConfig{
+		SocketPath: socketPath,
+		Commands:   bridge,
+	})
 	fatal = append(fatal, srv)
+
+	// Authorization engine + platform violation monitor (FT12 / FT7). The
+	// engine is fatal; the monitor needs the child's PID and is wired via
+	// PostStartHook below. On non-darwin builds these are nil — a future
+	// task will wire the linux NotifRespond applier and seccomp supervisor.
+	enforcing := flags.mode != "permissive"
+	engineSub, postStart := newAuthSubsystems(srv, bridge, enforcing)
+	if engineSub != nil {
+		fatal = append(fatal, engineSub)
+	}
 
 	cfg := supervisor.Config{
 		Cmd:                   cmd,
 		FatalSubsystems:       fatal,
 		RecoverableSubsystems: nil,
 		Verbose:               flags.verbose,
+		PostStartHook:         postStart,
 	}
 
 	result := supervisor.Run(ctx, cfg)

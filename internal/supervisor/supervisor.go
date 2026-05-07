@@ -77,6 +77,14 @@ type Config struct {
 	// DoubleIntInterval is how long after the first SIGINT a second SIGINT
 	// triggers a hard kill (TR49). Defaults to 2s.
 	DoubleIntInterval time.Duration
+
+	// PostStartHook, if non-nil, is invoked after Cmd.Start() succeeds with
+	// the freshly-started child's PID. Subsystems it returns are launched as
+	// additional fatal subsystems alongside FatalSubsystems. The hook exists
+	// because subsystems like the platform violation monitor depend on the
+	// child's PID, which is only known after Cmd.Start(). A non-nil error
+	// kills the child and ends the session with ExitCode 1.
+	PostStartHook func(pid int) ([]Subsystem, error)
 }
 
 func (c *Config) logger() *slog.Logger {
@@ -149,6 +157,15 @@ func Run(ctx context.Context, cfg Config) Result {
 		log.Info("child started", "pid", childPID)
 	}
 
+	// Post-start hook (e.g. platform monitor that needs the child's PID).
+	// Errors here are fatal: kill the child and bail before wiring goroutines.
+	postStartSubs, postStartErr := callPostStart(cfg, childPID)
+	if postStartErr != nil {
+		_ = cfg.Cmd.Process.Kill()
+		_, _ = cfg.Cmd.Process.Wait()
+		return Result{ExitCode: 1, Err: fmt.Errorf("post-start hook: %w", postStartErr)}
+	}
+
 	// cmd.Wait() is blocking and not context-aware; run it in a goroutine
 	// and communicate the result via a buffered channel.
 	childResult := make(chan error, 1)
@@ -217,8 +234,11 @@ func Run(ctx context.Context, cfg Config) Result {
 		}
 	})
 
-	// Fatal subsystems (TR53-TR55): errors end the session.
-	for _, sub := range cfg.FatalSubsystems {
+	// Fatal subsystems (TR53-TR55): errors end the session. Includes any
+	// post-start subsystems registered with the child's PID.
+	allFatal := append([]Subsystem(nil), cfg.FatalSubsystems...)
+	allFatal = append(allFatal, postStartSubs...)
+	for _, sub := range allFatal {
 		s := sub // capture
 		eg.Go(func() error {
 			if err := s.Run(egCtx); err != nil && !isContextDone(err) {
@@ -294,6 +314,14 @@ func Run(ctx context.Context, cfg Config) Result {
 	}
 
 	return Result{ExitCode: exitCode}
+}
+
+// callPostStart runs cfg.PostStartHook if set, returning its subsystems and error.
+func callPostStart(cfg Config, pid int) ([]Subsystem, error) {
+	if cfg.PostStartHook == nil {
+		return nil, nil
+	}
+	return cfg.PostStartHook(pid)
 }
 
 // errGraceful is a sentinel returned by the signal goroutine to signal a
