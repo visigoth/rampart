@@ -6,10 +6,13 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -61,8 +64,18 @@ See 'rampart help <subcommand>' for more information.
 		if flags.dryRun {
 			return runDryRun(flags, cmd.OutOrStdout())
 		}
-		// Full orchestration (FT1→FT2→FT3→FT4/FT5) is implemented in .1.2.
-		fmt.Fprintln(cmd.OutOrStdout(), "launch (not yet implemented)")
+
+		// Full orchestration: load + compile policy, build a sandbox-wrapped
+		// child Cmd, and hand off to the supervisor lifecycle (TR38–TR58).
+		// .1.2 implemented supervisor.Run; this is the wiring ().
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+
+		exitCode, err := runLaunch(ctx, flags, args, os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "rampart: %v\n", err)
+		}
+		exitWithCode(exitCode)
 		return nil
 	}
 
