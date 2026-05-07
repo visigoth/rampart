@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 
+	"github.com/visigoth/rampart/internal/ca"
+	"github.com/visigoth/rampart/internal/proxy"
 	"github.com/visigoth/rampart/internal/session"
 	"github.com/visigoth/rampart/internal/supervisor"
 )
@@ -41,6 +45,19 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	// FatalSubsystems: failures here end the session before, or alongside, the child.
 	fatal := []supervisor.Subsystem{}
 
+	// FT16: HTTP forward proxy. Bind the listener now so the allocated port can
+	// be injected into the child's environment before exec; the supervisor's
+	// Phase 5 starts the child before fatal subsystems run, so deferring
+	// proxy.Start to a goroutine inside Run would race the child.
+	if len(cp.Policy.ProxyACLs) > 0 {
+		ps, env, err := startProxyForPolicy(cp)
+		if err != nil {
+			return 1, err
+		}
+		cmd.Env = dedupEnv(append(cmd.Env, env...))
+		fatal = append(fatal, ps)
+	}
+
 	// Session socket: subscribers (e.g. `rampart escalations --watch`) connect
 	// here to receive escalation pushes and presence updates. Required for the
 	// escalation flow to function; bind failure is fatal.
@@ -63,6 +80,58 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 		fmt.Fprintf(stderr, "rampart: %v\n", result.Err)
 	}
 	return result.ExitCode, nil
+}
+
+// startProxyForPolicy compiles ACL rules from the resolved policy, loads the
+// MITM CA when any rule needs it, starts the forward proxy on a loopback port,
+// and writes a CA cert PEM to a temp file when the proxy is in MITM mode.
+// Returns the supervisor adapter, the env additions for the sandboxed Cmd,
+// and any startup error.
+func startProxyForPolicy(cp *compiledPolicy) (*proxySubsystem, []string, error) {
+	rules := proxy.CompileACLRules(cp.Policy.ProxyACLs, cp.Policy.MitmDomains)
+
+	var caCert *tls.Certificate
+	mitmRequired := false
+	for _, r := range rules {
+		if r.MITM {
+			mitmRequired = true
+			break
+		}
+	}
+	if mitmRequired {
+		loaded, err := ca.LoadCA()
+		if err != nil {
+			if errors.Is(err, ca.ErrNotInstalled) {
+				return nil, nil, fmt.Errorf("MITM required by ACL rules but CA not installed: run 'rampart init'")
+			}
+			return nil, nil, fmt.Errorf("load CA: %w", err)
+		}
+		caCert = loaded.TLSCert()
+	}
+
+	p, err := proxy.Start(proxy.Config{Rules: rules, CA: caCert})
+	if err != nil {
+		return nil, nil, fmt.Errorf("starting proxy: %w", err)
+	}
+
+	var caCertPath string
+	if len(p.CACertPEM) > 0 {
+		f, ferr := os.CreateTemp("", "rampart-ca-*.pem")
+		if ferr != nil {
+			_ = p.Close()
+			return nil, nil, fmt.Errorf("writing CA pem: %w", ferr)
+		}
+		if _, werr := f.Write(p.CACertPEM); werr != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			_ = p.Close()
+			return nil, nil, fmt.Errorf("writing CA pem: %w", werr)
+		}
+		_ = f.Close()
+		caCertPath = f.Name()
+	}
+
+	return &proxySubsystem{p: p, caCertPath: caCertPath}, proxyEnvVars(p.Port, caCertPath), nil
 }
 
 // buildSandboxedCmd is implemented per-platform in run_<goos>.go.
