@@ -85,6 +85,32 @@ type Config struct {
 	// child's PID, which is only known after Cmd.Start(). A non-nil error
 	// kills the child and ends the session with ExitCode 1.
 	PostStartHook func(pid int) ([]Subsystem, error)
+
+	// ChildExitInfo, if non-nil, receives the child's exit info once the
+	// supervisor's cmd.Wait() returns. PostStartHook subsystems (e.g. the
+	// macOS violation monitor) read from this channel instead of calling
+	// Wait4 themselves, which would race with the supervisor's own cmd.Wait
+	// and cause double-reap (one side gets ECHILD).
+	//
+	// The channel must be buffered (>=1) — the supervisor sends with a
+	// non-blocking select so a missing reader does not block the wait
+	// goroutine. The sole consumer is typically the Monitor subsystem.
+	ChildExitInfo chan<- ChildExit
+}
+
+// ChildExit captures the result of cmd.Wait() for distribution to
+// post-start subsystems that need to observe the child's termination.
+type ChildExit struct {
+	// ExitStatus is the child's exit code (0 on clean exit). Zero when the
+	// child was terminated by a signal.
+	ExitStatus int
+	// Signal is the terminating signal number (non-zero only when the child
+	// was killed by a signal — e.g. SIGKILL on macOS Seatbelt violation).
+	Signal int
+	// Err is non-nil only when cmd.Wait() returned an error that was
+	// neither a normal *exec.ExitError nor an exec.ExitError carrying a
+	// WaitStatus. Subsystems should treat this as a wait failure.
+	Err error
 }
 
 func (c *Config) logger() *slog.Logger {
@@ -167,9 +193,22 @@ func Run(ctx context.Context, cfg Config) Result {
 	}
 
 	// cmd.Wait() is blocking and not context-aware; run it in a goroutine
-	// and communicate the result via a buffered channel.
+	// and communicate the result via a buffered channel. We also broadcast
+	// the parsed exit info to any optional ChildExitInfo subscriber so
+	// post-start subsystems can observe termination without calling Wait4
+	// themselves (which would race with this cmd.Wait and double-reap).
 	childResult := make(chan error, 1)
-	go func() { childResult <- cfg.Cmd.Wait() }()
+	go func() {
+		err := cfg.Cmd.Wait()
+		if cfg.ChildExitInfo != nil {
+			info := childExitFromWait(err, cfg.Cmd)
+			select {
+			case cfg.ChildExitInfo <- info:
+			default:
+			}
+		}
+		childResult <- err
+	}()
 
 	// --- Set up signal handling (TR48-TR51) ---
 	sigCh := make(chan os.Signal, 4)
@@ -314,6 +353,26 @@ func Run(ctx context.Context, cfg Config) Result {
 	}
 
 	return Result{ExitCode: exitCode}
+}
+
+// childExitFromWait converts an *exec.Cmd.Wait() error into a ChildExit
+// for broadcast to ChildExitInfo subscribers.
+func childExitFromWait(err error, cmd *exec.Cmd) ChildExit {
+	if err == nil {
+		if cmd.ProcessState != nil {
+			return ChildExit{ExitStatus: cmd.ProcessState.ExitCode()}
+		}
+		return ChildExit{}
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		ws, ok := ee.Sys().(syscall.WaitStatus)
+		if ok && ws.Signaled() {
+			return ChildExit{Signal: int(ws.Signal())}
+		}
+		return ChildExit{ExitStatus: ee.ExitCode()}
+	}
+	return ChildExit{Err: err}
 }
 
 // callPostStart runs cfg.PostStartHook if set, returning its subsystems and error.

@@ -78,7 +78,7 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	// PostStartHook below. On non-darwin builds these are nil — a future
 	// task will wire the linux NotifRespond applier and seccomp supervisor.
 	enforcing := flags.mode != "permissive"
-	engineSub, postStart := newAuthSubsystems(srv, bridge, enforcing)
+	engineSub, postStart, childExitCh := newAuthSubsystems(srv, bridge, enforcing)
 	if engineSub != nil {
 		fatal = append(fatal, engineSub)
 	}
@@ -102,6 +102,7 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 		RecoverableSubsystems: recoverable,
 		Verbose:               flags.verbose,
 		PostStartHook:         postStart,
+		ChildExitInfo:         childExitCh,
 	}
 
 	result := supervisor.Run(ctx, cfg)

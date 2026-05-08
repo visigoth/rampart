@@ -14,7 +14,13 @@ import (
 //
 // The bridge is attached to srv so command messages received on the session
 // socket are routed back to the engine's per-escalation response channel.
-func newAuthSubsystems(srv *session.Server, bridge *sessionBridge, enforcing bool) (supervisor.Subsystem, func(pid int) ([]supervisor.Subsystem, error)) {
+//
+// childExitCh is the channel the caller will register with
+// supervisor.Config.ChildExitInfo: the supervisor pushes the child's exit
+// info there once cmd.Wait() returns, and the Monitor's WaitFunc reads from
+// it. This avoids the Monitor calling Wait4(pid) itself, which would race
+// with the supervisor's cmd.Wait and produce ECHILD on the loser.
+func newAuthSubsystems(srv *session.Server, bridge *sessionBridge, enforcing bool) (supervisor.Subsystem, func(pid int) ([]supervisor.Subsystem, error), chan supervisor.ChildExit) {
 	bridge.attachServer(srv)
 
 	engine := supervisor.NewEngine(supervisor.EngineConfig{
@@ -24,13 +30,18 @@ func newAuthSubsystems(srv *session.Server, bridge *sessionBridge, enforcing boo
 		// Hook left nil: hook subprocess wiring is a separate task.
 	})
 
+	childExitCh := make(chan supervisor.ChildExit, 1)
 	postStart := func(pid int) ([]supervisor.Subsystem, error) {
 		mon := supervisor.NewMonitor(supervisor.MonitorConfig{
 			PID:    pid,
 			Engine: engine,
+			WaitFunc: func(_ int) (int, int, error) {
+				ce := <-childExitCh
+				return ce.ExitStatus, ce.Signal, ce.Err
+			},
 		})
 		return []supervisor.Subsystem{mon}, nil
 	}
 
-	return engine, postStart
+	return engine, postStart, childExitCh
 }
