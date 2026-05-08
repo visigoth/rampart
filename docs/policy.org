@@ -166,12 +166,6 @@ Field semantics:
 - The structured =network= block has the same grammar as in agents.
   Profile network rules are the runtime-authoritative source per TR16
   (the proxy applies the profile's rules verbatim).
-- =allowed_domains = ["*"]= is the explicit profile-side opt-in to the
-  =full= network mode: no proxy filtering, kernel allows raw outbound
-  on darwin. See [[*Network mode and the =*= convention][Network mode
-  and the =*= convention]] below — without this, the merge cannot
-  produce =full= and an agent's =network_mode = "full"= request is
-  always clamped to at most =filtered=.
 
 ** =defaults= block
 
@@ -198,7 +192,7 @@ Given an =agent= and a =profile=, rampart computes a =ResolvedPolicy=:
 | =write=         | Agent.write intersected with profile.write                                  |
 | =exec=          | Agent.exec intersected with profile.exec                                    |
 | =workdir=       | Profile.workdir, resolved on Linux                                          |
-| =network_mode=  | =min(agent.network_mode, profile-inferred)=. Profile mode is inferred: =allowed_domains= contains =*= → =full=; any other domains or =network= block → =filtered=; nothing → =none= |
+| =network_mode=  | =min(agent.network_mode, profile-inferred)=. Profile mode is inferred: any =allowed_domains= or =network= block → =filtered=; nothing → =none=. Profile inference cannot produce =full= — it is a virtual mode an agent declares but the merge clamps it to whatever the profile grants |
 | =allowed_domains= | Intersection (prefix-matched) of agent.domains/network and profile equivalents |
 | =proxy_acls=    | Profile's =network=-block rules (TR16: profile is sole runtime authority)   |
 | =mitm_domains=  | From profile only                                                           |
@@ -210,25 +204,43 @@ they exist for one-off debugging, not for permanent grants. Persistent
 grants belong in HCL (use =rampart review= to fold accumulated runtime
 approvals back into the profile).
 
-* Network mode and the =*= convention
+* Network mode
 
 A profile's network mode is inferred from what it declares — there is
 no =network_mode= attribute on profiles. The inference rules:
 
-| Profile declares                               | Inferred mode |
-|------------------------------------------------+---------------|
-| =allowed_domains= contains the literal =*=     | =full=        |
-| Any specific =allowed_domains= or =network= block | =filtered= |
-| Nothing about network                          | =none=        |
+| Profile declares                                  | Inferred mode |
+|---------------------------------------------------+---------------|
+| Any =allowed_domains= or =network= block          | =filtered=    |
+| Nothing about network                             | =none=        |
+
+The default posture for a profile is =none= — outbound is denied until
+the profile explicitly grants something.
 
 The merged =network_mode= is =min(agent, profile-inferred)= over
-=none < filtered < full=. Concretely:
+=none < filtered < full=. The =full= rung is a virtual ceiling: an
+agent can /declare/ =network_mode = "full"= but profile inference can
+only produce =filtered= or =none=, so the merge clamps the result. To
+grant effectively-unrestricted network, write a wildcard ACL in
+=filtered= form:
 
-- An agent declaring =network_mode = "full"= can only resolve to =full=
-  if the profile also opts in via =allowed_domains = ["*"]=. Without
-  that opt-in the agent is clamped to whatever the profile declares.
-- An agent declaring =network_mode = "filtered"= caps the result at
-  =filtered= even if the profile uses =["*"]=.
+#+begin_src hcl
+profile "default" {
+  workdir = "."
+  network {
+    domain "*" {
+      allow "GET"    { paths = ["/**"] }
+      allow "POST"   { paths = ["/**"] }
+      allow "PUT"    { paths = ["/**"] }
+      allow "PATCH"  { paths = ["/**"] }
+      allow "DELETE" { paths = ["/**"] }
+    }
+  }
+}
+#+end_src
+
+This keeps the proxy in the path (so MITM, logging, and ACL evaluation
+all still work) while admitting any host and any path.
 
 What each mode does at runtime:
 
@@ -241,19 +253,6 @@ What each mode does at runtime:
   per-domain =(allow network-outbound (remote tcp "<d>:*") ...)= for
   each entry in =allowed_domains=. On Linux the netns is isolated so
   outbound is only possible through the proxy.
-- =full= — on darwin the SBPL emits =(allow network*)= and the proxy
-  is /not/ started (no ACLs to apply); the child has direct
-  unrestricted outbound. *On Linux this mode is currently inert*:
-  =bwrap.go= always passes =--unshare-all= and there is no
-  =--share-net= path, so the child has no network regardless. Tracked
-  as a follow-up to make Linux honor =full=.
-
-Why =allowed_domains = ["*"]= rather than =network { domain "*" {} }=:
-the structured form is for ACLs that match all domains (e.g. "any
-domain, but only GET on /v1/**"). It keeps the proxy in the path so
-those rules can be applied. Putting =*= in the flat =allowed_domains=
-list says the opposite — "no filtering, take the proxy out of the
-path".
 
 * End-to-end example
 
