@@ -254,6 +254,118 @@ What each mode does at runtime:
   each entry in =allowed_domains=. On Linux the netns is isolated so
   outbound is only possible through the proxy.
 
+* Modules
+
+A profile can compose reusable fragments via =use= blocks:
+
+#+begin_src hcl
+profile "default" {
+  workdir = "."
+
+  use "lang/python" { venv = "/home/me/repo/.venv" }
+  use "tooling/git" {}
+  use "ai/anthropic" {}
+  use "system/base" {}
+
+  read = ["/etc/ssl"]   # extra contributions on top of modules
+}
+#+end_src
+
+Each =use= block instantiates a /module/ — a parameterized HCL fragment
+that contributes path lists and =network { domain ... }= blocks. The
+fragments concatenate into the surrounding profile (path lists dedup;
+network domains concat as-is — the proxy's most-specific-match-wins
+selects the right rule at request time).
+
+** Module file format
+
+A module file is a top-level HCL body (no wrapping =module= block —
+the file's path under its search root /is/ the module name):
+
+#+begin_src hcl
+# ~/.local/share/rampart/modules/lang/python.hcl
+
+variable "venv" {
+  type        = string
+  default     = ".venv"
+  description = "Project virtualenv path."
+}
+
+# Optional transitive composition.
+use "system/base" {}
+
+read = ["/usr/lib/python3", "/usr/bin/python3"]
+exec = ["/usr/bin/python3", "${var.venv}/bin/python", "${var.venv}/bin/pip"]
+write = ["${var.venv}"]
+
+network {
+  domain "pypi.org" {
+    allow "GET" { paths = ["/simple/**", "/pypi/**"] }
+  }
+  domain "files.pythonhosted.org" {
+    allow "GET" { paths = ["/**"] }
+  }
+}
+#+end_src
+
+=variable= block fields:
+
+- =type= — =string= or =list(string)=. v1 narrows to these two; richer
+  cty types are reserved for a follow-up.
+- =default= — optional. When omitted, the variable is required at
+  use-site.
+- =description= — optional human-readable comment.
+
+** Search path resolution
+
+=use "<path>"= searches in order and stops at the first match:
+
+1. =<git-root>/.rampart/modules/<path>.hcl=
+2. =~/.local/share/rampart/modules/<path>.hcl=
+
+The repo-local path wins so a project can override or fork a global
+module. Resolution failure produces a diagnostic at the =use= block's
+source range listing the paths it tried.
+
+** Variable scoping
+
+Each module gets its own =EvalContext=. Inside a module body,
+=${var.<name>}= resolves to the value passed in the =use= block (or to
+the module's declared default). Modules cannot see the consumer's
+variables; this keeps a module's expansion a pure function of its
+arguments.
+
+Values can flow through nested modules. A parent module's
+=use "child" { foo = var.bar }= evaluates =var.bar= in the parent's
+own scope and forwards it as =foo= to the child.
+
+** Transitive composition + cycle detection
+
+Modules can themselves declare =use= blocks. Cycles are detected by
+absolute resolved path; a self-cycle or longer chain produces an error
+naming each link.
+
+** Ships-with-rampart library
+
+=just install rampart= lays down a curated module library at
+=/opt/shaheengandhi/share/rampart/modules/=, and the binary embeds the
+same tree and extracts it to =~/.local/share/rampart/modules/= on first
+run (user-edited files are preserved via SHA-256 detection).
+
+| Module           | Purpose                                                   |
+|------------------+-----------------------------------------------------------|
+| =lang/python=     | Virtualenv + system Python + pypi.org / files.pythonhosted |
+| =lang/node=       | Node + npm + npmjs.org registry                           |
+| =lang/go=         | Go toolchain + proxy.golang.org + sum.golang.org           |
+| =lang/rust=       | Cargo + crates.io + index.crates.io                       |
+| =tooling/git=     | git binary + ssh keys read + .gitconfig (no network)      |
+| =tooling/github=  | api.github.com + githubusercontent.com                    |
+| =ai/anthropic=    | api.anthropic.com (Claude)                                |
+| =ai/openai=       | api.openai.com                                            |
+| =ai/gemini=       | generativelanguage.googleapis.com + aistudio              |
+| =system/base=     | /etc essentials read-only (resolv.conf, ssl/certs, ...)   |
+| =network/any=     | =domain "*"= allowing common HTTP methods on all paths     |
+
 * End-to-end example
 
 Repo layout:

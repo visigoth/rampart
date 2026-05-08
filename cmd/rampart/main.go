@@ -25,6 +25,11 @@ func main() {
 	// first run; skip user-modified profiles (FR61).
 	_ = MaybeExtractProfiles()
 
+	// Extract the policy-module library to ~/.local/share/rampart/modules/.
+	// Same user-edit-preservation contract as the agent extraction — module
+	// files modified by the user are detected by SHA-256 and left alone.
+	_ = MaybeExtractModules()
+
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -61,8 +61,14 @@ The devcontainer image already has =bwrap=, =libseccomp-dev=, and
 ** First-run profile extraction
 
 The first time =rampart= runs it copies the embedded pre-baked agent
-profiles into =~/.local/share/rampart/agents/=. User-modified files are
-preserved; only missing files are written.
+profiles into =~/.local/share/rampart/agents/=, and the policy-module
+library into =~/.local/share/rampart/modules/= (preserving the
+=lang/=, =tooling/=, =ai/=, =system/=, =network/= subtree). User-modified
+files are detected by SHA-256 and preserved across upgrades.
+
+The module library is the recommended way to compose project policies —
+see [[file:policy.org::*Modules][Modules]] in policy.org for the file
+format, search-path resolution, and the bundled module catalog.
 
 * Configuration overview
 

@@ -14,6 +14,9 @@ import (
 //go:embed assets/agents/*.hcl
 var embeddedAgents embed.FS
 
+//go:embed all:assets/modules
+var embeddedModules embed.FS
+
 // hashesFile is the filename used to record the SHA-256 hash of each embedded
 // profile when it was last extracted. Used to detect user-modified profiles.
 const hashesFile = ".rampart-sha256"
@@ -27,6 +30,17 @@ func defaultAgentsDir() (string, error) {
 	return filepath.Join(home, ".local", "share", "rampart", "agents"), nil
 }
 
+// defaultModulesDir returns ~/.local/share/rampart/modules/. Module
+// extraction preserves the on-disk subdirectory tree (lang/, tooling/,
+// ai/, system/, network/) so `use "lang/python"` resolves predictably.
+func defaultModulesDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("getting home dir: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "rampart", "modules"), nil
+}
+
 // MaybeExtractProfiles extracts embedded agent profiles to the default
 // agents directory (~/.local/share/rampart/agents/) if the directory does
 // not exist (FR61.1). On subsequent calls, only extracts profiles that have
@@ -38,79 +52,115 @@ func MaybeExtractProfiles() error {
 	if err != nil {
 		return err
 	}
-	return ExtractProfiles(dir)
+	return extractEmbedded(embeddedAgents, "assets/agents", dir, "agents")
 }
 
-// ExtractProfiles extracts embedded agent profiles to dir.
-// If dir does not exist, it is created and all profiles are written.
-// If dir exists, only unmodified profiles (whose SHA-256 matches the
-// stored hash from the last rampart-managed write) are overwritten (FR61.2).
-func ExtractProfiles(dir string) error {
-	profiles, err := embeddedProfileMap()
+// MaybeExtractModules extracts the embedded policy-module library to
+// ~/.local/share/rampart/modules/, preserving the subdirectory tree.
+// User edits are preserved via the same SHA-256 mechanism as profiles
+// (a per-directory .rampart-sha256 manifest tracks each file's last
+// rampart-written hash).
+func MaybeExtractModules() error {
+	dir, err := defaultModulesDir()
 	if err != nil {
-		return fmt.Errorf("reading embedded profiles: %w", err)
+		return err
+	}
+	return extractEmbedded(embeddedModules, "assets/modules", dir, "modules")
+}
+
+// ExtractProfiles is retained for callers (and tests) that pin the
+// destination directory. Behaviour identical to MaybeExtractProfiles
+// against `dir` instead of the user's default.
+func ExtractProfiles(dir string) error {
+	return extractEmbedded(embeddedAgents, "assets/agents", dir, "agents")
+}
+
+// extractEmbedded copies an embedded HCL tree into destDir. The on-disk
+// layout mirrors the embedded layout (subdirectories preserved). On a
+// fresh destDir all files are written. On subsequent calls only files
+// whose current SHA-256 matches the last rampart-written hash are
+// overwritten — user edits survive future invocations.
+//
+// `kind` is a human-readable label used only in error messages.
+func extractEmbedded(efs embed.FS, srcPrefix, destDir, kind string) error {
+	files, err := embeddedFileMap(efs, srcPrefix)
+	if err != nil {
+		return fmt.Errorf("reading embedded %s: %w", kind, err)
 	}
 
-	dirExists, err := dirExistsCheck(dir)
+	dirExists, err := dirExistsCheck(destDir)
 	if err != nil {
 		return err
 	}
 
-	// Load the stored hashes so we can detect user-modified files.
 	storedHashes := map[string]string{}
 	if dirExists {
-		storedHashes, _ = loadHashes(filepath.Join(dir, hashesFile))
+		storedHashes, _ = loadHashes(filepath.Join(destDir, hashesFile))
 	}
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating agents dir %s: %w", dir, err)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s dir %s: %w", kind, destDir, err)
 	}
 
 	newHashes := map[string]string{}
-	for name, content := range profiles {
+	for relPath, content := range files {
 		hash := sha256sum(content)
-		newHashes[name] = hash
+		newHashes[relPath] = hash
 
-		target := filepath.Join(dir, name)
+		target := filepath.Join(destDir, relPath)
 		if dirExists {
-			// Check whether the file was user-modified.
 			existing, readErr := os.ReadFile(target)
 			if readErr == nil {
-				// File exists. If its hash doesn't match what rampart last wrote,
-				// the user modified it — skip (FR61.2).
-				originalHash, known := storedHashes[name]
+				originalHash, known := storedHashes[relPath]
 				if known && sha256sum(existing) != originalHash {
 					continue // user-modified: preserve
 				}
 			}
 		}
 
+		// Ensure the destination directory exists for files in subtrees
+		// (e.g. lang/python.hcl needs lang/ to be created).
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("creating %s subdir %s: %w", kind, filepath.Dir(target), err)
+		}
 		if err := os.WriteFile(target, content, 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", target, err)
 		}
 	}
 
-	return saveHashes(filepath.Join(dir, hashesFile), newHashes)
+	return saveHashes(filepath.Join(destDir, hashesFile), newHashes)
 }
 
-// embeddedProfileMap returns a map of filename → content for all embedded HCL files.
-func embeddedProfileMap() (map[string][]byte, error) {
+// embeddedFileMap walks an embedded subtree and returns a map of
+// relative-to-srcPrefix path → file content for every .hcl file. The
+// relative path preserves any subdirectory structure (e.g. "lang/python.hcl").
+func embeddedFileMap(efs embed.FS, srcPrefix string) (map[string][]byte, error) {
 	result := make(map[string][]byte)
-	err := fs.WalkDir(embeddedAgents, "assets/agents", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(efs, srcPrefix, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".hcl") {
 			return nil
 		}
-		data, err := embeddedAgents.ReadFile(path)
-		if err != nil {
-			return err
+		data, readErr := efs.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
-		result[filepath.Base(path)] = data
+		rel, relErr := filepath.Rel(srcPrefix, path)
+		if relErr != nil {
+			return relErr
+		}
+		result[rel] = data
 		return nil
 	})
 	return result, err
+}
+
+// embeddedProfileMap is retained as an alias for the agent extraction
+// tests; new code should call embeddedFileMap directly.
+func embeddedProfileMap() (map[string][]byte, error) {
+	return embeddedFileMap(embeddedAgents, "assets/agents")
 }
 
 // sha256sum returns the hex-encoded SHA-256 hash of data.

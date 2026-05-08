@@ -120,6 +120,77 @@ func TestExtractProfiles_HashFileWritten(t *testing.T) {
 	}
 }
 
+// --- Tests: module library extraction ---
+
+func TestExtractModules_FirstRun_PreservesSubdirectoryTree(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "modules")
+	if err := extractEmbedded(embeddedModules, "assets/modules", dir, "modules"); err != nil {
+		t.Fatalf("extractEmbedded: %v", err)
+	}
+
+	// Spot-check one module per category to confirm the subdirectory
+	// structure landed.
+	wants := []string{
+		"lang/python.hcl",
+		"lang/node.hcl",
+		"lang/go.hcl",
+		"lang/rust.hcl",
+		"tooling/git.hcl",
+		"tooling/github.hcl",
+		"ai/anthropic.hcl",
+		"ai/openai.hcl",
+		"ai/gemini.hcl",
+		"system/base.hcl",
+		"network/any.hcl",
+	}
+	for _, rel := range wants {
+		path := filepath.Join(dir, rel)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected %s to exist after extraction: %v", rel, err)
+		}
+	}
+}
+
+func TestExtractModules_HashFileWritten(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "modules")
+	if err := extractEmbedded(embeddedModules, "assets/modules", dir, "modules"); err != nil {
+		t.Fatalf("extractEmbedded: %v", err)
+	}
+	hf := filepath.Join(dir, hashesFile)
+	if _, err := os.Stat(hf); err != nil {
+		t.Errorf("hash file not created: %v", err)
+	}
+}
+
+func TestExtractModules_PreservesUserEdits(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "modules")
+	if err := extractEmbedded(embeddedModules, "assets/modules", dir, "modules"); err != nil {
+		t.Fatalf("first extract: %v", err)
+	}
+
+	// Simulate a user edit on one module.
+	edited := filepath.Join(dir, "lang", "python.hcl")
+	custom := []byte(`# user-modified
+variable "venv" { type = string, default = "/custom/venv" }
+read = ["/usr/lib/python3"]
+`)
+	if err := os.WriteFile(edited, custom, 0o644); err != nil {
+		t.Fatalf("write user edit: %v", err)
+	}
+
+	// Re-extract; user edit must survive.
+	if err := extractEmbedded(embeddedModules, "assets/modules", dir, "modules"); err != nil {
+		t.Fatalf("second extract: %v", err)
+	}
+	got, err := os.ReadFile(edited)
+	if err != nil {
+		t.Fatalf("re-read edited file: %v", err)
+	}
+	if string(got) != string(custom) {
+		t.Errorf("user-modified module was overwritten on re-extract")
+	}
+}
+
 // --- Tests: idempotency (directory exists, files unmodified) ---
 
 func TestExtractProfiles_Idempotent_UnmodifiedFilesRewritten(t *testing.T) {
