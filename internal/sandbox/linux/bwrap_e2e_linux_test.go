@@ -170,7 +170,15 @@ func TestE2E_BwrapSmoke(t *testing.T) {
 }
 
 // TestE2E_PIDNamespaceIsolation verifies that --unshare-all gives the child
-// a fresh PID namespace where it sees itself as PID 1.
+// a fresh PID namespace where it sees a small process ID that proves the
+// pidns is isolated from the host.
+//
+// Why we accept pid=1 OR pid=2: bwrap's default behavior (without
+// --as-pid-1) is to fork a reaper that itself becomes PID 1 in the new
+// namespace, and the target binary runs as PID 2. Some runtime setups
+// (specific bwrap versions, or kernel-managed init) end up with the target
+// as PID 1 directly. Both demonstrate the PID namespace is fresh — the
+// host-side bwrap PID would be a four- or five-digit value.
 func TestE2E_PIDNamespaceIsolation(t *testing.T) {
 	if !userNamespacesAvailable() {
 		t.Skip("unprivileged user namespaces disabled on this host")
@@ -183,8 +191,9 @@ func TestE2E_PIDNamespaceIsolation(t *testing.T) {
 		t.Fatalf("pid helper failed: signal=%v exit=%d stdout=%s stderr=%s",
 			res.signal, res.exitCode, res.stdout, res.stderr)
 	}
-	if !strings.Contains(res.stdout, "pid=1\n") {
-		t.Errorf("expected child to see pid=1 (PID namespace), got: %q", res.stdout)
+	if !strings.Contains(res.stdout, "pid=1\n") && !strings.Contains(res.stdout, "pid=2\n") {
+		t.Errorf("expected child to see pid=1 or pid=2 (fresh PID namespace), got: %q",
+			res.stdout)
 	}
 }
 
