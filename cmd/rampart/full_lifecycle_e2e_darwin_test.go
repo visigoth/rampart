@@ -27,141 +27,6 @@ import (
 	"time"
 )
 
-// buildStubAgent compiles a small Go binary that performs a few in-policy
-// filesystem operations and returns its absolute path. Marker files written
-// by the stub let tests assert the child actually ran inside the sandbox.
-func buildStubAgent(t *testing.T, workdir string) string {
-	t.Helper()
-	src := `package main
-
-import (
-	"fmt"
-	"os"
-	"path/filepath"
-)
-
-// Stub agent simulating Claude Code: read+write a few files in workdir.
-// All paths are in-policy under the SBPL profile compiled by rampart.
-func main() {
-	wd := os.Getenv("STUB_WORKDIR")
-	if wd == "" {
-		fmt.Fprintln(os.Stderr, "STUB_WORKDIR not set")
-		os.Exit(1)
-	}
-
-	// In-policy write.
-	out := filepath.Join(wd, "stub.touched")
-	if err := os.WriteFile(out, []byte("ok\n"), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "write %s: %v\n", out, err)
-		os.Exit(2)
-	}
-
-	// In-policy read-back.
-	data, err := os.ReadFile(out)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "read %s: %v\n", out, err)
-		os.Exit(3)
-	}
-	fmt.Printf("stub-agent: wrote+read %d bytes\n", len(data))
-	os.Exit(0)
-}
-`
-	srcDir := filepath.Join(workdir, "_stub_src")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatalf("mkdir stub src: %v", err)
-	}
-	srcPath := filepath.Join(srcDir, "main.go")
-	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
-		t.Fatalf("write stub src: %v", err)
-	}
-
-	binPath := filepath.Join(workdir, "stub-agent")
-	cmd := exec.Command("go", "build", "-o", binPath, srcPath)
-	cmd.Env = append(os.Environ(), "GOFLAGS=") // honour ambient toolchain
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build stub-agent: %v\n%s", err, out)
-	}
-	return binPath
-}
-
-// scaffoldRampartConfig writes a minimal .rampart/ tree allowing read+write
-// inside the working directory. The compiled SBPL grants access to the
-// EvalSymlinks-resolved workdir path so it matches what Seatbelt sees.
-func scaffoldRampartConfig(t *testing.T, gitDir string) {
-	t.Helper()
-	rampDir := filepath.Join(gitDir, ".rampart")
-	if err := os.MkdirAll(filepath.Join(rampDir, "profiles", "e2e"), 0o755); err != nil {
-		t.Fatalf("mkdir .rampart: %v", err)
-	}
-	defaults := `defaults {
-  default_agent   = "coding"
-  default_profile = "e2e/default"
-}
-`
-	if err := os.WriteFile(filepath.Join(rampDir, "defaults.hcl"), []byte(defaults), 0o644); err != nil {
-		t.Fatalf("write defaults.hcl: %v", err)
-	}
-	agents := `agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "none"
-}
-`
-	if err := os.WriteFile(filepath.Join(rampDir, "agents.hcl"), []byte(agents), 0o644); err != nil {
-		t.Fatalf("write agents.hcl: %v", err)
-	}
-	profile := `profile "default" {
-  workdir = "."
-  write   = ["."]
-}
-`
-	if err := os.WriteFile(filepath.Join(rampDir, "profiles", "e2e", "default.hcl"), []byte(profile), 0o644); err != nil {
-		t.Fatalf("write profile: %v", err)
-	}
-}
-
-// makeE2ETestEnv sets up a self-contained test workspace: a git dir with
-// .rampart config, a stub HOME (so session sockets land in tmp), and chdir
-// into the git dir. Returns the resolved git root path.
-func makeE2ETestEnv(t *testing.T) string {
-	t.Helper()
-
-	// Use /tmp directly: t.TempDir() on darwin returns /var/folders/... paths
-	// that may exceed sun_path's 104-byte limit for the session socket.
-	gitDir, err := os.MkdirTemp("/tmp", "ramp-e2e")
-	if err != nil {
-		t.Fatalf("mkdir tmp: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(gitDir) })
-
-	if err := os.MkdirAll(filepath.Join(gitDir, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-
-	scaffoldRampartConfig(t, gitDir)
-
-	homeDir, err := os.MkdirTemp("/tmp", "ramp-e2e-home")
-	if err != nil {
-		t.Fatalf("mkdir home: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(homeDir) })
-	t.Setenv("HOME", homeDir)
-
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(gitDir); err != nil {
-		t.Fatalf("chdir gitDir: %v", err)
-	}
-	t.Cleanup(func() { os.Chdir(origDir) })
-
-	resolved, err := filepath.EvalSymlinks(gitDir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	return resolved
-}
-
 // TestE2E_FullSessionLifecycle covers the happy path: rampart launches a
 // stub agent under a real Seatbelt sandbox, the agent performs in-policy
 // filesystem ops and exits 0, rampart returns exit code 0, and the session
@@ -179,8 +44,8 @@ func TestE2E_FullSessionLifecycle_HappyPath(t *testing.T) {
 		t.Skipf("go toolchain required to compile stub agent: %v", err)
 	}
 
-	resolvedWorkdir := makeE2ETestEnv(t)
-	stubBin := buildStubAgent(t, resolvedWorkdir)
+	resolvedWorkdir := makeE2ELifecycleEnv(t)
+	stubBin := buildE2EStubAgent(t, resolvedWorkdir)
 
 	// Verify HOME-derived session dir is empty before launch (no stale sockets).
 	sessionsDir := filepath.Join(os.Getenv("HOME"), ".rampart", "sessions")
@@ -245,7 +110,7 @@ func TestE2E_FullSessionLifecycle_SIGINTGracefulShutdown(t *testing.T) {
 		t.Skipf("sandbox-exec not available: %v", err)
 	}
 
-	resolvedWorkdir := makeE2ETestEnv(t)
+	resolvedWorkdir := makeE2ELifecycleEnv(t)
 
 	// Use /bin/sleep as the long-running stub. /bin is the CLAUDE_BIN_DIR
 	// allowing process-exec on /bin/sleep.
@@ -340,8 +205,8 @@ func TestE2E_FullSessionLifecycle_BinaryViaExec(t *testing.T) {
 		t.Fatalf("go build rampart: %v\n%s", err, out)
 	}
 
-	resolvedWorkdir := makeE2ETestEnv(t)
-	stubBin := buildStubAgent(t, resolvedWorkdir)
+	resolvedWorkdir := makeE2ELifecycleEnv(t)
+	stubBin := buildE2EStubAgent(t, resolvedWorkdir)
 
 	cmd := exec.Command(rampartBin, "--no-tmux", "--headless",
 		"--env", "STUB_WORKDIR="+resolvedWorkdir,
