@@ -1,0 +1,348 @@
+#+TITLE: Rampart Policy
+#+SUBTITLE: Where to write policy files, and the HCL surface
+
+This document describes the rampart policy file system: where files
+live, how they are discovered, how agent and profile declarations
+combine, and the full HCL grammar. For overall installation and CLI
+usage, see [[file:readme.org][readme.org]].
+
+* Two kinds of declarations
+
+Rampart's policy is the intersection of two declarations:
+
+- *Agent* — what an AI tool /requests/. An agent is a stable identity
+  ("the coding assistant", "the planning agent") that says: I want
+  read-write filesystem access; I want filtered network; I want these
+  toolchains. Agents are typically reusable across projects.
+- *Profile* — what the project /grants/. A profile is project-specific:
+  the workdir, allowed paths, allowed domains, MITM scope, network
+  rules. Profiles are typically narrow and version-controlled in the
+  repo.
+
+The merge is a capability intersection. The runtime mode
+(=enforcing= or =permissive=) is a CLI flag, not part of either file.
+
+** Why split this way
+
+A single declaration would force every project to spell out an entire
+agent's request from scratch. Splitting lets the project narrow what a
+shared agent can do (intersect more granularly) without rewriting the
+agent.
+
+* Where policy files live
+
+Three search scopes, indexed in this order. Lower-priority entries are
+overwritten by higher-priority ones with the same name:
+
+1. *Global* — =~/.local/share/rampart/=
+   - =agents.hcl= — multi-agent file
+   - =agents/<name>.hcl= — single-agent files (one =agent= block per file)
+   - First-run extraction seeds this with pre-baked agents.
+2. *Repo-wide* — =<git-root>/.rampart/=
+   - =agents.hcl= and =agents/<name>.hcl= — agent overrides shared
+     across the repo
+3. *Project* — =<git-root>/.rampart/profiles/<project>/=
+   - =default.hcl= — the profile named =default= (resolves as
+     =<project>= or =<project>/default=)
+   - =<name>.hcl= — additional named profiles (=<project>/<name>=)
+   - =agents/<name>.hcl= — agents scoped to this project (resolve as
+     =<project>/<name>=)
+   - Shorthand: =<git-root>/.rampart/<project>.hcl= — single-file
+     profile for a project (resolves as =<project>/default=)
+
+Plus one special file:
+
+- =<git-root>/.rampart/defaults.hcl= — names the default agent and
+  profile for the repo when no =--agent= / =--profile= flag is passed
+
+** Resolution rules
+
+- Agent names without a slash resolve in the order
+  global → repo → project, with later scopes winning. Use
+  =project/name= to address a project-scoped agent unambiguously.
+- Profile names accept three forms:
+  - =project/name= — explicit
+  - =project= — shorthand for =project/default=
+  - bare =name= — searches across all projects (rare; prefer qualified)
+- The git root is located by walking up from the current working
+  directory looking for =.git=. Pass =--no-git= to =rampart init= to
+  scaffold without git.
+
+** Programmatically locate the dirs
+
+The Go API exposes:
+
+- =config.GlobalShareDir()= → =~/.local/share/rampart=
+- =config.FindGitRoot(start)= → walks up from =start=
+
+* The HCL grammar
+
+Three top-level block kinds:
+
+- =agent "<name>" { ... }= in =agents.hcl= or =agents/<name>.hcl=
+- =profile "<name>" { ... }= in =profiles/<project>/<name>.hcl= or
+  =profiles/<project>/default.hcl= or =<project>.hcl=
+- =defaults { ... }= in =defaults.hcl= (one per repo)
+
+Multiple =agent= blocks are allowed in =agents.hcl=. Profile files
+typically contain a single =profile= block.
+
+** =agent= block
+
+#+begin_src hcl
+agent "<name>" {
+  description  = "free-form description"        // optional
+  filesystem   = "none" | "read-only" | "read-write"  // required
+  read         = ["/path", ...]                  // optional
+  write        = ["/path", ...]                  // optional
+  exec         = ["/path", ...]                  // optional
+  network_mode = "none" | "filtered" | "full"    // required
+  domains      = ["api.example.com", "*.npmjs.org", ...]  // optional
+  toolchains   = ["node", "python", "go", ...]   // optional
+
+  network {                                       // optional, structured ACLs
+    domain "<domain-pattern>" {
+      allow "<METHOD>" {
+        paths = ["/v1/messages", "/v1/**"]
+      }
+      deny "<METHOD>" {
+        paths = ["/admin/**"]
+      }
+    }
+    // ...
+  }
+}
+#+end_src
+
+Field semantics:
+
+- =filesystem= is the abstract maximum the agent will request. The
+  effective mode is =min(agent.filesystem, profile-inferred-mode)=.
+- =read=, =write=, =exec= are concrete path requests. Empty means "use
+  whatever the profile grants for this access level".
+- =network_mode= follows the same =min()= rule. =none= disables the
+  forward proxy entirely; =filtered= enables it with the merged ACL
+  set; =full= enables it without filtering.
+- =domains= is a flat list. =network { domain ... }= is the structured
+  form with method+path ACLs. Both can coexist.
+- Path patterns support glob characters: =*= matches one path segment,
+  =**= matches zero or more. Domain patterns support a leading =*.= for
+  subdomain wildcards.
+
+** =profile= block
+
+#+begin_src hcl
+profile "<name>" {
+  workdir         = "."                             // required (relative or absolute)
+  read            = ["/path", ...]                   // optional
+  write           = ["/path", ...]                   // optional
+  exec            = ["/path", ...]                   // optional
+  allowed_domains = ["api.example.com", ...]         // optional
+  mitm_domains    = ["api.example.com", ...]         // optional, subset of allowed_domains
+  toolchains      = ["node", "python", ...]          // optional
+
+  network {                                          // optional, same shape as in agents
+    domain "api.example.com" {
+      allow "POST" { paths = ["/v1/messages"] }
+      allow "GET"  { paths = ["/v1/**"] }
+    }
+  }
+}
+#+end_src
+
+Field semantics:
+
+- =workdir= is required. It can be relative (e.g. =.= for "wherever
+  rampart was launched") or absolute. The Linux backend resolves
+  relative paths against the launch CWD before passing to bwrap;
+  symlinks are evaluated.
+- =write= grants imply =read= (FR1.12) — you don't need to repeat a
+  path in =read= just to write it.
+- =exec= grants imply =read= as well; the directory containing exec
+  binaries is bind-mounted with read+exec bits.
+- =allowed_domains= is the flat domain allowlist. =mitm_domains= must
+  be a subset; only those domains have HTTPS bodies inspected via the
+  rampart CA.
+- The structured =network= block has the same grammar as in agents.
+  Profile network rules are the runtime-authoritative source per TR16
+  (the proxy applies the profile's rules verbatim).
+
+** =defaults= block
+
+#+begin_src hcl
+defaults {
+  default_agent   = "coding"
+  default_profile = "<project>/default"
+}
+#+end_src
+
+Both fields are optional. =rampart= falls back to =coding= for the
+agent if no default is set; the profile has no fallback and the launch
+errors out. The form =<project>= is shorthand for =<project>/default=
+when used as the value of =default_profile=.
+
+* Merge semantics
+
+Given an =agent= and a =profile=, rampart computes a =ResolvedPolicy=:
+
+| Field           | Rule                                                                        |
+|-----------------+-----------------------------------------------------------------------------|
+| =filesystem_mode= | =min(agent.filesystem, profile-inferred)=, where the profile's inferred mode is the strongest grant present (=write= ⇒ =read-write=, only =read= ⇒ =read-only=, otherwise =none=) |
+| =read=          | Profile read+write+exec grants intersected with agent.read (write/exec imply read) |
+| =write=         | Agent.write intersected with profile.write                                  |
+| =exec=          | Agent.exec intersected with profile.exec                                    |
+| =workdir=       | Profile.workdir, resolved on Linux                                          |
+| =network_mode=  | =min(agent.network_mode, profile-inferred)=                                  |
+| =allowed_domains= | Intersection (prefix-matched) of agent.domains/network and profile equivalents |
+| =proxy_acls=    | Profile's =network=-block rules (TR16: profile is sole runtime authority)   |
+| =mitm_domains=  | From profile only                                                           |
+| =toolchains=    | Set intersection                                                            |
+
+CLI overrides (=--allow-path=, =--allow-domain=) are added /after/
+intersection — they bypass the merge unconditionally. Use sparingly;
+they exist for one-off debugging, not for permanent grants. Persistent
+grants belong in HCL (use =rampart review= to fold accumulated runtime
+approvals back into the profile).
+
+* End-to-end example
+
+Repo layout:
+
+#+begin_example
+my-repo/
+├── .rampart/
+│   ├── defaults.hcl
+│   ├── agents.hcl
+│   └── profiles/
+│       └── my-repo/
+│           ├── default.hcl
+│           └── ci.hcl
+└── ...
+#+end_example
+
+=.rampart/defaults.hcl=:
+
+#+begin_src hcl
+defaults {
+  default_agent   = "coding"
+  default_profile = "my-repo/default"
+}
+#+end_src
+
+=.rampart/agents.hcl= — the repo's "coding" agent narrows the global
+default:
+
+#+begin_src hcl
+agent "coding" {
+  description  = "Repo-wide coding agent"
+  filesystem   = "read-write"
+  read         = ["/etc/ssl"]
+  write        = ["/tmp"]
+  exec         = ["/usr/bin/git", "/usr/bin/make"]
+  network_mode = "filtered"
+  domains      = ["api.anthropic.com", "*.npmjs.org"]
+  toolchains   = ["node", "python", "go"]
+
+  network {
+    domain "api.anthropic.com" {
+      allow "POST" { paths = ["/v1/messages", "/v1/complete"] }
+      allow "GET"  { paths = ["/v1/**"] }
+    }
+    domain "*.npmjs.org" {}
+  }
+}
+#+end_src
+
+=.rampart/profiles/my-repo/default.hcl= — what this repo grants:
+
+#+begin_src hcl
+profile "default" {
+  workdir         = "."
+  read            = ["/etc", "/usr/share"]
+  write           = ["/tmp"]
+  exec            = ["/usr/bin", "/usr/local/bin"]
+  allowed_domains = ["api.anthropic.com", "*.npmjs.org"]
+  toolchains      = ["node", "python", "go"]
+
+  network {
+    domain "api.anthropic.com" {
+      allow "POST" { paths = ["/v1/messages", "/v1/complete"] }
+      allow "GET"  { paths = ["/v1/**"] }
+    }
+    domain "*.npmjs.org" {}
+  }
+}
+#+end_src
+
+=.rampart/profiles/my-repo/ci.hcl= — a tighter CI profile:
+
+#+begin_src hcl
+profile "ci" {
+  workdir = "/ci/workspace"
+  exec    = ["/usr/bin", "/ci/bin"]
+
+  network {
+    domain "api.anthropic.com" {}
+  }
+}
+#+end_src
+
+Launch:
+
+#+begin_src sh
+# Default agent + profile
+rampart -- claude
+
+# Override profile to ci
+rampart --profile my-repo/ci -- claude
+#+end_src
+
+* Validation and authoring tips
+
+- =rampart --dry-run -- <cmd>= compiles the policy and prints the
+  resulting platform-native sandbox flags. Use this to debug what the
+  kernel actually sees.
+- =rampart test --agent <a> --profile <p>= loads the policy and drops
+  into a REPL where you can probe specific resources without launching.
+- =rampart --strict -- <cmd>= turns compile-time validation warnings
+  into errors. Useful in CI.
+- The HCL parser validates path globs (use =/= as the separator,
+  =*= for one segment, =**= for any depth) and domain globs (=*.= for
+  subdomain wildcards). Invalid patterns fail the load with a
+  source-located error.
+- A profile must declare =workdir=. There is no implicit default.
+- Avoid =--allow-path= / =--allow-domain= for anything you'll need
+  twice. Approve via the escalation channel and run =rampart review=
+  to fold the approval into the HCL.
+
+* Minimal starter profile
+
+If you just want a sandboxed shell on the working directory, no
+network, this is enough:
+
+#+begin_src hcl
+profile "default" {
+  workdir = "."
+  write   = ["."]
+}
+#+end_src
+
+Pair it with the default =coding= agent (read-write filesystem, no
+network) and rampart will permit reads and writes inside the workdir
+and deny everything else.
+
+* Pre-baked agents
+
+The first =rampart= invocation extracts these into
+=~/.local/share/rampart/agents/=:
+
+| File           | Identity            |
+|----------------+---------------------|
+| =coding.hcl=    | =coding= agent      |
+| =planning.hcl=  | =planning= agent    |
+| =reviewing.hcl= | =reviewing= agent   |
+
+User edits to any of these files are preserved across rampart
+upgrades; only missing files are written on first run. Use
+=rampart init --rotate= to rescaffold the repo (this does not touch
+the global agents).

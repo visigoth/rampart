@@ -1,0 +1,340 @@
+#+TITLE: Rampart
+#+SUBTITLE: Cross-platform sandbox wrapper for AI coding agents
+
+Rampart compiles a declarative HCL policy into kernel-level sandbox rules
+and launches a target command under those restrictions. On macOS the
+backend is Seatbelt (=sandbox-exec=); on Linux it is bubblewrap
+(=bwrap=) plus seccomp. A user-space HTTP forward proxy applies network
+ACLs (with optional MITM for HTTPS) when the policy allows network
+access.
+
+For policy authoring details, see [[file:policy.org][policy.org]].
+
+* What rampart does
+
+Given a target command (e.g. =claude=, =codex=, =gemini=) and a policy,
+rampart:
+
+1. Loads agent and profile configs from the search path
+   (project → repo → global) and merges them into a =ResolvedPolicy=.
+2. Compiles the policy into platform-native sandbox rules — SBPL on
+   macOS, bwrap argv plus seccomp BPF on Linux.
+3. Starts a session-local Unix socket (=$HOME/.rampart/sessions/<pid>.sock=)
+   so observers like =rampart escalations --watch= can see live state.
+4. Optionally starts an HTTP forward proxy listening on a loopback port
+   and injects =HTTP_PROXY=/=HTTPS_PROXY= into the child env.
+5. Forks the sandboxed child and supervises it: forwards signals,
+   handles violations, kills on policy denial in enforcing mode, and
+   propagates exit code on shutdown.
+
+* Installation
+
+** macOS (host)
+
+#+begin_src sh
+just install rampart
+#+end_src
+
+This builds, code-signs (use the "Rampart Local Dev" identity if
+present, ad-hoc signing otherwise), and installs to:
+
+- =/opt/shaheengandhi/bin/rampart= (binary)
+- =/opt/shaheengandhi/share/man/man1/rampart.1= (man page)
+- =/opt/shaheengandhi/share/{zsh,bash-completion}/...= (completions)
+- =$HOME/.config/fish/completions/rampart.fish=
+
+A self-signed code-signing identity is recommended on macOS so rebuilds
+keep a stable signature. Without it the MITM CA's Keychain ACLs reset
+on every rebuild and Keychain prompts on first access. See the Justfile
+header for one-time cert setup instructions.
+
+** Linux (devcontainer)
+
+#+begin_src sh
+just build rampart linux    # builds inside the rampart devcontainer
+#+end_src
+
+The devcontainer image already has =bwrap=, =libseccomp-dev=, and
+=iptables= installed. The resulting binary lands at
+=/opt/shaheengandhi/bin/rampart= inside the container.
+
+** First-run profile extraction
+
+The first time =rampart= runs it copies the embedded pre-baked agent
+profiles into =~/.local/share/rampart/agents/=. User-modified files are
+preserved; only missing files are written.
+
+* Configuration overview
+
+Rampart reads policy from three scopes, lowest to highest priority:
+
+| Scope     | Location                                          | Purpose                                    |
+|-----------+---------------------------------------------------+--------------------------------------------|
+| Global    | =~/.local/share/rampart/agents/*.hcl=             | Pre-baked + user-installed agents          |
+| Repo-wide | =<git-root>/.rampart/agents.hcl=, =/agents/=      | Repo-shared agent overrides                |
+| Project   | =<git-root>/.rampart/profiles/<project>/=         | Project-specific profile (and agents)      |
+| Defaults  | =<git-root>/.rampart/defaults.hcl=                | Selects the default agent and profile      |
+
+Agent-vs-profile split:
+- *Agent* declares what an AI tool /requests/ — abstract filesystem and
+  network mode plus optional concrete paths and domains.
+- *Profile* declares what the project /grants/ — workdir, allowed paths,
+  network domains, MITM scope.
+
+The merge is a capability intersection: =min(agent, profile)=. Run
+=rampart test= to interactively probe the resolved policy without
+launching a real sandbox.
+
+The user-level approvals file is JSON, not HCL:
+=~/.config/rampart/config.json=. =rampart review= replays accumulated
+escape-hatch records from this file and incorporates them back into the
+relevant HCL profile.
+
+For the full HCL grammar and authoring guidance, see [[file:policy.org][policy.org]].
+
+* Common usage
+
+** Bootstrap a new repo
+
+#+begin_src sh
+cd /path/to/repo
+rampart init                 # scaffolds .rampart/ and installs MITM CA
+rampart init --install-hooks # also installs tmux + shell hooks
+#+end_src
+
+This writes =.rampart/defaults.hcl= and a starter
+=.rampart/profiles/<repo>/default.hcl=. Edit the profile to grant the
+network domains and additional paths your workflow needs.
+
+** Launch an agent in the sandbox
+
+#+begin_src sh
+# Use the defaults from .rampart/defaults.hcl
+rampart -- claude
+
+# Override agent or profile
+rampart --agent reviewing --profile /default -- codex
+
+# Add a temporary path or domain (bypasses intersection)
+rampart --allow-path /tmp/scratch -- claude
+rampart --allow-domain api.example.com -- claude
+
+# Permissive mode: log violations but do not kill the child
+rampart --mode permissive -- claude
+
+# Inspect what a launch /would/ do, without launching
+rampart --dry-run -- claude
+#+end_src
+
+Trailing arguments after =--= are the target command and its arguments;
+they are forwarded verbatim to the sandboxed child.
+
+** Probe a policy interactively
+
+#+begin_src sh
+rampart test --agent coding --profile /default
+#+end_src
+
+Drops into a REPL with a small command set:
+
+| Command            | Purpose                                              |
+|--------------------+------------------------------------------------------|
+| =read <path>=      | Verdict for a filesystem read                         |
+| =write <path>=     | Verdict for a filesystem write                        |
+| =exec <path>=      | Verdict for process execution                         |
+| =http METHOD URL=  | Verdict for an HTTP request through the proxy         |
+| =policy=           | Print the resolved policy summary                     |
+| =exit= / =Ctrl-D=  | Quit                                                  |
+
+** Resolve escalations
+
+When the sandboxed child requests something outside the policy, rampart
+emits an /escalation/ on the session socket and (depending on
+=$RAMPART_HOOK= and presence) prompts in the tmux pane or via the
+configured hook. There are three ways to act on an escalation:
+
+*** From the same session (interactive)
+
+If the launch is in =interactive-tmux= mode, a side pane runs
+=rampart escalations --watch= and presents Approve / Deny / Persist
+buttons inline. =Approve= unblocks just this access; =Persist= records
+an =EscalationRecord= in =~/.config/rampart/config.json= so the next
+matching access on this agent+profile is auto-allowed.
+
+*** From a different terminal (cross-session)
+
+#+begin_src sh
+rampart escalations                    # list pending escalations
+rampart escalations --watch            # subscribe to live escalations
+rampart escalations --approve <id>     # approve a specific escalation
+rampart escalations --deny <id>        # deny a specific escalation
+#+end_src
+
+Active sessions are discovered via =~/.rampart/sessions/*.sock=.
+=--approve= and =--deny= are mutually exclusive with =--watch=.
+
+*** Offline review (back-port to HCL)
+
+After a session ends, persisted approvals accumulate in
+=~/.config/rampart/config.json=. To fold them into the project's HCL
+profile (so the prompt never recurs):
+
+#+begin_src sh
+rampart review
+#+end_src
+
+This walks the records grouped by agent + profile and prompts:
+
+| Choice       | Effect                                                            |
+|--------------+-------------------------------------------------------------------|
+| =I=ncorporate | Add the path/domain to the matching =read=/=write=/=exec=/=allowed_domains= list in the HCL profile (atomic temp-file write, formatting preserved via =hclwrite=). Removes the entry from =config.json=. |
+| =D=iscard     | Drop the entry from =config.json= without modifying HCL.            |
+| =S=kip        | Leave the entry in =config.json= for later.                         |
+
+Disable the escape hatch entirely with =--no-escape-hatch=: violations
+become hard kills with no escalation prompt.
+
+** Other subcommands
+
+| Subcommand                          | Purpose                                                          |
+|-------------------------------------+------------------------------------------------------------------|
+| =rampart init=                       | Scaffold =.rampart/= and install the MITM CA in the keychain      |
+| =rampart init --install-hooks=       | Also install tmux and shell presence-push hooks                  |
+| =rampart init --rotate=              | Replace existing scaffold and rotate the MITM CA                  |
+| =rampart uninstall=                  | Remove the MITM CA from the platform store                       |
+| =rampart version=                    | Print the binary version                                         |
+| =rampart docs man --output-dir <d>=  | Generate man pages                                               |
+| =rampart completion {bash,zsh,fish}= | Generate shell completion scripts                                |
+
+* Run-mode flags
+
+| Flag                  | Default     | Notes                                                              |
+|-----------------------+-------------+--------------------------------------------------------------------|
+| =--agent <name>=       | from defaults.hcl | Agent identifier (=name= or =project/name=)                  |
+| =--profile <name>=     | from defaults.hcl | Profile identifier (=name= or =project/name=)                |
+| =--mode {enforcing,permissive}= | =enforcing= | Permissive mode logs but does not kill on violation       |
+| =--strict=             | off         | Promote compile-time validation warnings to errors                  |
+| =--verbose= / =-v=     | off         | Print policy compilation diagnostics                                |
+| =--dry-run=            | off         | Compile policy and print sandbox flags without launching            |
+| =--no-escape-hatch=    | off         | Disable interactive escalation; violations are hard kills           |
+| =--new-session=        | off         | Start agent in a new tmux session                                   |
+| =--new-window=         | off         | Start agent in a new tmux window                                    |
+| =--no-tmux=            | off         | Force interactive-direct mode (skip tmux)                           |
+| =--headless=           | off         | Force headless mode (no interactive escalation channels)            |
+| =--allow-path <p>=     | (none)      | Add a path to policy unconditionally; bypasses intersection         |
+| =--allow-domain <d>=   | (none)      | Add a domain to policy unconditionally; bypasses intersection       |
+| =--env VAR= / =VAR=v=  | (none)      | Augment env allowlist for this invocation                           |
+| =--no-env=             | off         | Strip user/repo env additions; pass only built-ins                  |
+
+Built-in env vars always passed to the child: =PATH=, =HOME=, =USER=,
+=TERM=, =LANG=, =SHELL=, =TMPDIR=, =XDG_RUNTIME_DIR=, =XDG_CACHE_HOME=,
+plus any =LC_*= locale vars.
+
+Execution-mode detection (highest priority first):
+
+1. =--headless= → =headless=
+2. =--no-tmux= → =interactive-direct=
+3. =$CI= set → =headless=
+4. Non-TTY stdin → =headless=
+5. =$TMUX= set → =interactive-tmux=
+6. Default → =interactive-direct=
+
+* Testing
+
+** Run the full suite (Mac + Linux from a Mac host)
+
+#+begin_src sh
+just test rampart
+#+end_src
+
+On macOS this runs =go test ./cmd/rampart/... ./internal/rampart/...=
+with the Info.plist linker flags needed for the macOS Seatbelt entitlements.
+On Linux it runs =go test= directly.
+
+** macOS-only tests (Seatbelt)
+
+The macOS-specific tests require =/usr/bin/sandbox-exec= and the macOS
+unified log API. They are gated by =//go:build darwin=:
+
+#+begin_src sh
+cd go
+go test ./internal/rampart/sandbox/macos/... ./internal/rampart/supervisor/...
+#+end_src
+
+Notable suites:
+- =supervisor= — auth engine, monitor, violation killer, log streamer
+- =sandbox/macos= — SBPL compilation, Seatbelt E2E enforcement
+- =cmd/rampart= — full session lifecycle (=full_lifecycle_e2e_darwin_test.go=)
+
+** Linux-only tests (bwrap + seccomp)
+
+The Linux-specific tests need =bwrap= on PATH, =libseccomp-dev= for
+cgo, and either unprivileged user namespaces or =CAP_SYS_ADMIN=. They
+skip cleanly when those preconditions are missing.
+
+The recommended path is the project's CI image, run via podman from the
+worktree root:
+
+#+begin_src sh
+podman run --rm \
+  --cap-add=SYS_ADMIN \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  -v "$(pwd):/work:Z" \
+  -w /work/go \
+  golang:1.26-bookworm \
+  bash -c '
+    apt-get update -qq && apt-get install -y --no-install-recommends \
+      bubblewrap libseccomp-dev iptables pkg-config build-essential \
+      ca-certificates >/dev/null
+    go test -count=1 -timeout=5m ./cmd/rampart/... ./internal/rampart/...
+  '
+#+end_src
+
+Notable suites:
+- =sandbox/linux= — bwrap flag compilation, seccomp BPF generation,
+  bwrap+seccomp E2E enforcement (=bwrap_e2e_linux_test.go=,
+  =seccomp_e2e_linux_test.go=)
+- =cmd/rampart= — full session lifecycle (=full_lifecycle_e2e_linux_test.go=)
+
+Some bwrap tests are sensitive to PID-namespace nesting. Running the
+suite inside an unprivileged podman container that already imposes a
+PID namespace (rather than the rootful Linux runner CI uses) can cause
+=TestE2E_PIDNamespaceIsolation= to see =pid=2= instead of =pid=1=. The
+test accepts either; both demonstrate fresh-pidns isolation.
+
+** CI
+
+The Forgejo workflow at =.forgejo/workflows/rampart-test.yml= runs the
+full Linux suite on every push or PR that touches =go/= or
+=.devcontainer/rampart/=. It uses the same =golang:1.26-bookworm= image
+as the manual podman recipe above, with =--cap-add=SYS_ADMIN= and
+unconfined seccomp / apparmor.
+
+** Cross-compile sanity
+
+To verify Linux build constraints from a Mac without running the tests
+themselves (useful when editing build-tagged files):
+
+#+begin_src sh
+cd go
+CGO_ENABLED=1 GOOS=linux go vet ./...
+#+end_src
+
+A full =go test -c= cross-build will fail in =libseccomp-golang= unless
+you have a Linux libseccomp toolchain available — that is expected.
+
+* Architecture pointers
+
+The plan documents in =.plans/rampart/= are the source of truth for
+internal design decisions:
+
+- =prd.org= — product requirements
+- =floorplan.org= — component-level architecture, swim lanes
+- =tdd.org= and =tdd/= — technical design (TR-numbered requirements)
+- =features/= — per-feature plans (FT1–FT18)
+- =contracts/= — entity schemas (=entities.org=) and API contracts
+  (=api1-internal.org= through =api6-tmux-control.org=)
+- =test-plan/= — test strategy
+
+For policy authoring (the primary user-facing API), see [[file:policy.org][policy.org]].
