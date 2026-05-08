@@ -93,6 +93,7 @@ func reviewCmd() *cobra.Command {
 func initCmd() *cobra.Command {
 	var (
 		rotate       bool
+		force        bool
 		projectName  string
 		installHooks bool
 		noGit        bool
@@ -108,8 +109,11 @@ Initialize rampart for this repository. Two things happen:
   2. The MITM CA certificate is installed (Keychain on macOS, files on Linux).
 
 On macOS, step 2 requires an interactive session — it is skipped in SSH or CI.
-Use --rotate to regenerate an existing .rampart/ scaffold or replace the CA.
-Use --install-hooks to also install tmux and shell hook templates.
+
+Re-running on an already-initialized repo errors by default. Use --force to
+silently overwrite the .rampart/ scaffold (the CA is left alone). Use
+--rotate when you also want to replace the existing CA. --install-hooks
+also installs tmux and shell hook templates.
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --- 1. Locate git root ---
@@ -132,13 +136,21 @@ Use --install-hooks to also install tmux and shell hook templates.
 
 			// --- 3. Scaffold .rampart/ ---
 			rampartDir := filepath.Join(gitRoot, ".rampart")
-			if _, err := os.Stat(rampartDir); err == nil && !rotate {
-				return fmt.Errorf(".rampart/ already exists — edit it manually or re-run with --rotate")
+			alreadyScaffolded := false
+			if _, err := os.Stat(rampartDir); err == nil {
+				alreadyScaffolded = true
+				if !force && !rotate {
+					return fmt.Errorf(".rampart/ already exists — edit it manually, re-run with --force to overwrite the scaffold, or --rotate to also rotate the CA")
+				}
 			}
 			if err := scaffoldRampartDir(rampartDir, projectName); err != nil {
 				return fmt.Errorf("scaffolding .rampart/: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Created .rampart/ for project %q\n", projectName)
+			verb := "Created"
+			if alreadyScaffolded {
+				verb = "Overwrote"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s .rampart/ for project %q\n", verb, projectName)
 			fmt.Fprintf(cmd.OutOrStdout(), "  .rampart/defaults.hcl\n")
 			fmt.Fprintf(cmd.OutOrStdout(), "  .rampart/profiles/%s/default.hcl\n", projectName)
 
@@ -196,6 +208,7 @@ Use --install-hooks to also install tmux and shell hook templates.
 	}
 
 	cmd.Flags().BoolVar(&rotate, "rotate", false, "Replace existing .rampart/ scaffold and CA")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing .rampart/ scaffold (CA is left alone)")
 	cmd.Flags().StringVar(&projectName, "project", "", "Project name (default: git repo basename)")
 	cmd.Flags().BoolVar(&installHooks, "install-hooks", false, "Install tmux and shell hooks")
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "Scaffold without a git repository")
