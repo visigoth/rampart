@@ -11,7 +11,25 @@ package ca
 #include <stdlib.h>
 #include <string.h>
 
+// SecKeychainCopyDefault is deprecated for new code that targets the
+// data-protection keychain, but rampart explicitly wants the legacy
+// file-backed login keychain (no entitlements needed for adhoc-signed
+// builds), and that's the unambiguous way to address it.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 static CFStringRef const rampart_label = CFSTR("rampart CA");
+
+// rampart_default_keychain returns a SecKeychainRef for the user's default
+// keychain (typically login.keychain-db). Caller must CFRelease. Returns
+// NULL on failure, with the OSStatus stored in *errOut when non-NULL.
+static SecKeychainRef rampart_default_keychain(OSStatus *errOut) {
+    SecKeychainRef kc = NULL;
+    OSStatus st = SecKeychainCopyDefault(&kc);
+    if (errOut) *errOut = st;
+    if (st != errSecSuccess) return NULL;
+    return kc;
+}
 
 // rampart_save_key stores an ECDSA P-256 private key from x9.63 bytes in Keychain.
 // The key never touches disk (TR20). Returns OSStatus.
@@ -35,17 +53,27 @@ static int rampart_save_key(const uint8_t *x963, size_t x963Len) {
     if (error) CFRelease(error);
     if (!keyRef) return errSecParam;
 
-    // Force the file-backed login keychain — kSecClassKey items default to
-    // the data-protection keychain on modern macOS, which requires the
-    // keychain-access-groups entitlement that adhoc-signed binaries lack.
-    // Without this, SecItemAdd fails with OSStatus -34018 (errSecMissingEntitlement).
-    const void *addKeys[] = { kSecClass,    kSecValueRef, kSecAttrLabel, kSecAttrIsPermanent, kSecUseDataProtectionKeychain };
-    const void *addVals[] = { kSecClassKey, keyRef,       rampart_label, kCFBooleanTrue,      kCFBooleanFalse };
+    // Target the user's default file-backed keychain (login.keychain-db)
+    // via the legacy kSecUseKeychain path. The modern
+    // kSecUseDataProtectionKeychain=false hint isn't enough on its own —
+    // SecItemAdd then rejects the SecKeyRef from SecKeyCreateWithData with
+    // errSecInvalidItemRef (-25304). The explicit SecKeychainRef is what
+    // SecItemAdd needs to pin the storage to the file keychain.
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) {
+        CFRelease(keyRef);
+        return (int)kcErr;
+    }
+
+    const void *addKeys[] = { kSecClass,    kSecValueRef, kSecAttrLabel, kSecAttrIsPermanent, kSecUseKeychain };
+    const void *addVals[] = { kSecClassKey, keyRef,       rampart_label, kCFBooleanTrue,      defaultKC };
     CFDictionaryRef addQ = CFDictionaryCreate(kCFAllocatorDefault, addKeys, addVals, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     OSStatus st = SecItemAdd(addQ, NULL);
     CFRelease(addQ);
     CFRelease(keyRef);
+    CFRelease(defaultKC);
     return (int)st;
 }
 
@@ -57,25 +85,37 @@ static int rampart_save_cert(const uint8_t *der, size_t derLen) {
     CFRelease(certData);
     if (!certRef) return errSecParam;
 
-    const void *addKeys[] = { kSecClass,              kSecValueRef, kSecAttrLabel, kSecUseDataProtectionKeychain };
-    const void *addVals[] = { kSecClassCertificate,   certRef,      rampart_label, kCFBooleanFalse };
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) {
+        CFRelease(certRef);
+        return (int)kcErr;
+    }
+
+    const void *addKeys[] = { kSecClass,              kSecValueRef, kSecAttrLabel, kSecUseKeychain };
+    const void *addVals[] = { kSecClassCertificate,   certRef,      rampart_label, defaultKC };
     CFDictionaryRef addQ = CFDictionaryCreate(kCFAllocatorDefault, addKeys, addVals, 4,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     OSStatus st = SecItemAdd(addQ, NULL);
     CFRelease(addQ);
     CFRelease(certRef);
+    CFRelease(defaultKC);
     return (int)st;
 }
 
 // rampart_set_trust sets user-domain trust for the stored cert (prompts for auth).
 static int rampart_set_trust(void) {
-    const void *sKeys[] = { kSecClass,             kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *sVals[] = { kSecClassCertificate,  rampart_label, kCFBooleanTrue, kSecMatchLimitOne, kCFBooleanFalse };
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) return (int)kcErr;
+    const void *sKeys[] = { kSecClass,             kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseKeychain };
+    const void *sVals[] = { kSecClassCertificate,  rampart_label, kCFBooleanTrue, kSecMatchLimitOne, defaultKC };
     CFDictionaryRef sq = CFDictionaryCreate(kCFAllocatorDefault, sKeys, sVals, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef result = NULL;
     OSStatus st = SecItemCopyMatching(sq, &result);
     CFRelease(sq);
+    CFRelease(defaultKC);
     if (st != errSecSuccess) return (int)st;
     SecCertificateRef certRef = (SecCertificateRef)result;
     st = SecTrustSettingsSetTrustSettings(certRef, kSecTrustSettingsDomainUser, NULL);
@@ -85,25 +125,33 @@ static int rampart_set_trust(void) {
 
 // rampart_load_key returns the stored SecKeyRef (caller must CFRelease).
 static SecKeyRef rampart_load_key(void) {
-    const void *sKeys[] = { kSecClass,    kSecAttrKeyClass,        kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *sVals[] = { kSecClassKey, kSecAttrKeyClassPrivate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, kCFBooleanFalse };
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) return NULL;
+    const void *sKeys[] = { kSecClass,    kSecAttrKeyClass,        kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseKeychain };
+    const void *sVals[] = { kSecClassKey, kSecAttrKeyClassPrivate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, defaultKC };
     CFDictionaryRef sq = CFDictionaryCreate(kCFAllocatorDefault, sKeys, sVals, 6,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef result = NULL;
     SecItemCopyMatching(sq, &result);
     CFRelease(sq);
+    CFRelease(defaultKC);
     return (SecKeyRef)result;
 }
 
 // rampart_load_cert_der returns cert DER bytes (caller must free *out with free()).
 static int rampart_load_cert_der(uint8_t **out, size_t *outLen) {
-    const void *sKeys[] = { kSecClass,            kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *sVals[] = { kSecClassCertificate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, kCFBooleanFalse };
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) { *out = NULL; *outLen = 0; return (int)kcErr; }
+    const void *sKeys[] = { kSecClass,            kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseKeychain };
+    const void *sVals[] = { kSecClassCertificate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, defaultKC };
     CFDictionaryRef sq = CFDictionaryCreate(kCFAllocatorDefault, sKeys, sVals, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef result = NULL;
     OSStatus st = SecItemCopyMatching(sq, &result);
     CFRelease(sq);
+    CFRelease(defaultKC);
     if (st != errSecSuccess) { *out = NULL; *outLen = 0; return (int)st; }
     SecCertificateRef certRef = (SecCertificateRef)result;
     CFDataRef certData = SecCertificateCopyData(certRef);
@@ -124,20 +172,27 @@ static int rampart_load_cert_der(uint8_t **out, size_t *outLen) {
 
 // rampart_remove_key deletes the stored key from Keychain.
 static int rampart_remove_key(void) {
-    const void *dKeys[] = { kSecClass,    kSecAttrKeyClass,        kSecAttrLabel, kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *dVals[] = { kSecClassKey, kSecAttrKeyClassPrivate, rampart_label, kSecMatchLimitAll, kCFBooleanFalse };
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) return (int)kcErr;
+    const void *dKeys[] = { kSecClass,    kSecAttrKeyClass,        kSecAttrLabel, kSecMatchLimit,    kSecUseKeychain };
+    const void *dVals[] = { kSecClassKey, kSecAttrKeyClassPrivate, rampart_label, kSecMatchLimitAll, defaultKC };
     CFDictionaryRef dq = CFDictionaryCreate(kCFAllocatorDefault, dKeys, dVals, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     OSStatus st = SecItemDelete(dq);
     CFRelease(dq);
+    CFRelease(defaultKC);
     return (int)st;
 }
 
 // rampart_remove_cert removes trust settings and deletes the cert from Keychain.
 static int rampart_remove_cert(void) {
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) return (int)kcErr;
     // Remove trust settings first.
-    const void *sKeys[] = { kSecClass,            kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *sVals[] = { kSecClassCertificate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, kCFBooleanFalse };
+    const void *sKeys[] = { kSecClass,            kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseKeychain };
+    const void *sVals[] = { kSecClassCertificate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, defaultKC };
     CFDictionaryRef sq = CFDictionaryCreate(kCFAllocatorDefault, sKeys, sVals, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef result = NULL;
@@ -148,12 +203,13 @@ static int rampart_remove_cert(void) {
     }
     CFRelease(sq);
     // Delete cert.
-    const void *dKeys[] = { kSecClass,            kSecAttrLabel, kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *dVals[] = { kSecClassCertificate, rampart_label, kSecMatchLimitAll, kCFBooleanFalse };
+    const void *dKeys[] = { kSecClass,            kSecAttrLabel, kSecMatchLimit,    kSecUseKeychain };
+    const void *dVals[] = { kSecClassCertificate, rampart_label, kSecMatchLimitAll, defaultKC };
     CFDictionaryRef dq = CFDictionaryCreate(kCFAllocatorDefault, dKeys, dVals, 4,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     OSStatus st = SecItemDelete(dq);
     CFRelease(dq);
+    CFRelease(defaultKC);
     return (int)st;
 }
 
@@ -183,13 +239,17 @@ static int rampart_sign(SecKeyRef keyRef, const uint8_t *digest, size_t digestLe
 
 // rampart_is_installed returns 1 if the cert is in Keychain, 0 otherwise.
 static int rampart_is_installed(void) {
-    const void *sKeys[] = { kSecClass,            kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseDataProtectionKeychain };
-    const void *sVals[] = { kSecClassCertificate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, kCFBooleanFalse };
+    OSStatus kcErr = errSecSuccess;
+    SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
+    if (!defaultKC) return 0;
+    const void *sKeys[] = { kSecClass,            kSecAttrLabel, kSecReturnRef,  kSecMatchLimit,    kSecUseKeychain };
+    const void *sVals[] = { kSecClassCertificate, rampart_label, kCFBooleanTrue, kSecMatchLimitOne, defaultKC };
     CFDictionaryRef sq = CFDictionaryCreate(kCFAllocatorDefault, sKeys, sVals, 5,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     CFTypeRef result = NULL;
     OSStatus st = SecItemCopyMatching(sq, &result);
     CFRelease(sq);
+    CFRelease(defaultKC);
     if (st == errSecSuccess && result) { CFRelease(result); return 1; }
     return 0;
 }
@@ -203,6 +263,8 @@ static int rampart_has_gui_session(void) {
     }
     return (attrs & sessionHasGraphicAccess) ? 1 : 0;
 }
+
+#pragma clang diagnostic pop
 */
 import "C"
 import (
