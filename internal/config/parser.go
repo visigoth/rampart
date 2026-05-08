@@ -37,6 +37,10 @@ func ParseAgentFile(path string, src []byte) ([]*AgentConfig, error) {
 
 // ParseProfileFile parses an HCL file containing one or more profile blocks.
 // Returns all profiles declared in the file. Each profile's SourceFile is set to path.
+//
+// After the gohcl decode, a second-pass partial-content extraction reads
+// any `use "<module>" { ... }` blocks from the profile's Remain body so
+// the module expander can resolve them later (see module.go).
 func ParseProfileFile(path string, src []byte) ([]*ProfileConfig, error) {
 	file, diags := hclsyntax.ParseConfig(src, path, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
@@ -55,9 +59,45 @@ func ParseProfileFile(path string, src []byte) ([]*ProfileConfig, error) {
 		if err := validateProfileConfig(p, path); err != nil {
 			return nil, err
 		}
+		uses, err := extractUseBlocks(p.Remain)
+		if err != nil {
+			return nil, err
+		}
+		p.Use = uses
 		profiles = append(profiles, p)
 	}
 	return profiles, nil
+}
+
+// extractUseBlocks performs a second-pass partial-content decode against a
+// remain body to surface any `use "<path>" { ... }` blocks. The use
+// blocks' bodies are held verbatim for later evaluation in the module
+// expander, where the consumer's EvalContext is known.
+//
+// Returns nil for both result and error when remain is nil (no surfaced
+// remain body — applies to constructions that don't capture it).
+func extractUseBlocks(remain hcl.Body) ([]*UseBlock, error) {
+	if remain == nil {
+		return nil, nil
+	}
+	schema := &hcl.BodySchema{
+		Blocks: []hcl.BlockHeaderSchema{
+			{Type: "use", LabelNames: []string{"path"}},
+		},
+	}
+	content, _, diags := remain.PartialContent(schema)
+	if diags.HasErrors() {
+		return nil, diagsToError(diags)
+	}
+	out := make([]*UseBlock, 0, len(content.Blocks))
+	for _, blk := range content.Blocks {
+		out = append(out, &UseBlock{
+			ModulePath: blk.Labels[0],
+			ArgBody:    blk.Body,
+			DeclRange:  blk.DefRange,
+		})
+	}
+	return out, nil
 }
 
 // ParseDefaultsFile parses a defaults.hcl file.

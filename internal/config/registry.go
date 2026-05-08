@@ -308,6 +308,16 @@ func (r *Registry) indexProfileFile(path, project, profileName string, isShortha
 	}
 	for _, p := range profiles {
 		p.SourceFile = physicalPath(p.SourceFile)
+		// Expand `use` blocks transitively against the module search path.
+		// The expander concatenates contributions and dedups path lists.
+		// Failure here is reported as a profile load error.
+		if len(p.Use) > 0 {
+			frag, err := ExpandUseBlocks(p.Use, r.gitRoot, r.globalDir, nil)
+			if err != nil {
+				return fmt.Errorf("%s: profile %q: %w", path, p.Name, err)
+			}
+			MergeFragmentIntoProfile(p, frag)
+		}
 		key := project + "/" + p.Name
 		r.profiles[key] = p
 		if isShorthand {

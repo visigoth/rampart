@@ -37,6 +37,12 @@ type ProfileConfig struct {
 
 	// SourceFile is set by the loader after parsing; not an HCL field.
 	SourceFile string
+
+	// Use is the parsed list of `use "<path>" { ... }` blocks declared in
+	// the profile. Populated by ParseProfileFile via a second-pass partial
+	// decode of Remain. The expander resolves these against the module
+	// search path and merges contributions into Read/Write/Exec/Network.
+	Use []*UseBlock
 }
 
 // DefaultsConfig is the parsed representation of defaults.hcl.
