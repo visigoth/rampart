@@ -31,48 +31,86 @@ static SecKeychainRef rampart_default_keychain(OSStatus *errOut) {
     return kc;
 }
 
-// rampart_save_key stores an ECDSA P-256 private key from x9.63 bytes in Keychain.
-// The key never touches disk (TR20). Returns OSStatus.
-static int rampart_save_key(const uint8_t *x963, size_t x963Len) {
-    CFDataRef keyData = CFDataCreate(kCFAllocatorDefault, x963, (CFIndex)x963Len);
-    if (!keyData) return errSecMemoryError;
-
-    int keySizeBits = 256;
-    CFNumberRef keySizeNum = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &keySizeBits);
-
-    const void *attrKeys[]   = { kSecAttrKeyType,                  kSecAttrKeyClass,      kSecAttrKeySizeInBits };
-    const void *attrVals[]   = { kSecAttrKeyTypeECSECPrimeRandom,  kSecAttrKeyClassPrivate, keySizeNum };
-    CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, attrKeys, attrVals, 3,
+// rampart_set_label sets kSecAttrLabel on a freshly-imported keychain item
+// reference. Used after SecItemImport so the load-by-label flows can find
+// the items later. The caller still owns `item`.
+static OSStatus rampart_set_label(CFTypeRef item, SecKeychainRef kc) {
+    const void *qKeys[] = { kSecValueRef, kSecUseKeychain };
+    const void *qVals[] = { item,         kc };
+    CFDictionaryRef query = CFDictionaryCreate(kCFAllocatorDefault, qKeys, qVals, 2,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const void *uKeys[] = { kSecAttrLabel };
+    const void *uVals[] = { rampart_label };
+    CFDictionaryRef update = CFDictionaryCreate(kCFAllocatorDefault, uKeys, uVals, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    OSStatus st = SecItemUpdate(query, update);
+    CFRelease(query);
+    CFRelease(update);
+    return st;
+}
 
-    CFErrorRef error = NULL;
-    SecKeyRef keyRef = SecKeyCreateWithData(keyData, attrs, &error);
-    CFRelease(keyData);
-    CFRelease(keySizeNum);
-    CFRelease(attrs);
-    if (error) CFRelease(error);
-    if (!keyRef) return errSecParam;
-
-    // Target the user's default file-backed keychain (login.keychain-db)
-    // via the legacy kSecUseKeychain path. The modern
-    // kSecUseDataProtectionKeychain=false hint isn't enough on its own —
-    // SecItemAdd then rejects the SecKeyRef from SecKeyCreateWithData with
-    // errSecInvalidItemRef (-25304). The explicit SecKeychainRef is what
-    // SecItemAdd needs to pin the storage to the file keychain.
+// rampart_save_key imports an ECDSA private key from PEM data into the
+// user's default file keychain (login.keychain-db) via SecItemImport.
+//
+// Why SecItemImport rather than SecItemAdd: SecKeyCreateWithData produces
+// a transient SecKeyRef that the legacy file keychain rejects on add
+// (errSecParam / errSecInvalidItemRef in different macOS versions).
+// SecItemImport is the documented path for loading external key material
+// into a SecKeychainRef and reliably persists the key with full ACLs.
+//
+// pem must be a PEM-encoded EC private key block (-----BEGIN EC PRIVATE
+// KEY-----). The label is set in a follow-up SecItemUpdate so the load
+// path can find it by kSecAttrLabel.
+static int rampart_save_key(const uint8_t *pem, size_t pemLen) {
     OSStatus kcErr = errSecSuccess;
     SecKeychainRef defaultKC = rampart_default_keychain(&kcErr);
-    if (!defaultKC) {
-        CFRelease(keyRef);
-        return (int)kcErr;
+    if (!defaultKC) return (int)kcErr;
+
+    CFDataRef data = CFDataCreate(kCFAllocatorDefault, pem, (CFIndex)pemLen);
+    if (!data) {
+        CFRelease(defaultKC);
+        return errSecMemoryError;
     }
 
-    const void *addKeys[] = { kSecClass,    kSecValueRef, kSecAttrLabel, kSecAttrIsPermanent, kSecUseKeychain };
-    const void *addVals[] = { kSecClassKey, keyRef,       rampart_label, kCFBooleanTrue,      defaultKC };
-    CFDictionaryRef addQ = CFDictionaryCreate(kCFAllocatorDefault, addKeys, addVals, 5,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    OSStatus st = SecItemAdd(addQ, NULL);
-    CFRelease(addQ);
-    CFRelease(keyRef);
+    SecExternalFormat format = kSecFormatPEMSequence;
+    SecExternalItemType itemType = kSecItemTypePrivateKey;
+    SecItemImportExportKeyParameters params;
+    memset(&params, 0, sizeof(params));
+    params.version = SEC_KEY_IMPORT_EXPORT_PARAMS_VERSION;
+    // kSecKeyNoAccessControl is the C-API equivalent of `security import -A`
+    // — skip the per-app ACL prompt. Combined with the
+    // SecKeychainSetUserInteractionAllowed(false) call below, this makes
+    // SecItemImport non-interactive (no GUI dialog), which is required
+    // when rampart is invoked over SSH (no UI surface on the calling
+    // session). Trade-off: any app on this user account can use the
+    // key; for a local-dev MITM CA on adhoc-signed builds, the
+    // ACL-pinned-to-binary protection wasn't enforceable anyway.
+    params.flags = kSecKeyNoAccessControl;
+
+    // Snapshot the previous interaction setting and force it off for the
+    // duration of the import. Restore on the way out so we don't bleed
+    // process-wide state into other Sec* calls (e.g. SetTrustSettings,
+    // which still wants to be interactive on a logged-in console).
+    Boolean prevInteraction = TRUE;
+    SecKeychainGetUserInteractionAllowed(&prevInteraction);
+    SecKeychainSetUserInteractionAllowed(FALSE);
+
+    CFArrayRef outItems = NULL;
+    OSStatus st = SecItemImport(data, NULL, &format, &itemType,
+        0, &params, defaultKC, &outItems);
+
+    SecKeychainSetUserInteractionAllowed(prevInteraction);
+    CFRelease(data);
+
+    if (st == errSecSuccess && outItems) {
+        CFIndex n = CFArrayGetCount(outItems);
+        for (CFIndex i = 0; i < n; i++) {
+            CFTypeRef it = CFArrayGetValueAtIndex(outItems, i);
+            (void)rampart_set_label(it, defaultKC);
+        }
+        CFRelease(outItems);
+    }
+
     CFRelease(defaultKC);
     return (int)st;
 }
@@ -331,8 +369,11 @@ func setSignerFinalizer(s *keychainSigner) {
 	})
 }
 
-func cgoSaveKey(x963 []byte) C.int {
-	return C.int(C.rampart_save_key((*C.uint8_t)(unsafe.Pointer(&x963[0])), C.size_t(len(x963))))
+// cgoSaveKey passes a PEM-encoded EC private key to SecItemImport via the
+// C wrapper. PEM (rather than x9.63 raw bytes) is the import format that
+// the legacy file keychain accepts reliably.
+func cgoSaveKey(keyPEM []byte) C.int {
+	return C.int(C.rampart_save_key((*C.uint8_t)(unsafe.Pointer(&keyPEM[0])), C.size_t(len(keyPEM))))
 }
 
 func cgoSaveCert(der []byte) C.int {

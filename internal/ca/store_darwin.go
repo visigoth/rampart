@@ -14,24 +14,20 @@ import (
 // The private key never touches disk — it is created in memory and imported via CGo.
 // This call may prompt for Keychain authentication on macOS.
 func saveCA(certPEM, keyPEM []byte) error {
-	// Parse key and build x9.63 format for SecKeyCreateWithData.
-	// x9.63 P-256: 0x04 | X(32) | Y(32) | D(32) = 97 bytes.
+	// Validate the key parses as an EC private key before handing the PEM
+	// off to SecItemImport. This catches malformed input before the cgo
+	// boundary, where diagnostics are coarser.
 	keyBlock, _ := decodePEM(keyPEM)
 	if keyBlock == nil {
 		return errors.New("invalid key PEM")
 	}
-	ecKey, err := x509.ParseECPrivateKey(keyBlock)
-	if err != nil {
+	if _, err := x509.ParseECPrivateKey(keyBlock); err != nil {
 		return fmt.Errorf("parsing EC private key: %w", err)
 	}
-	x963 := make([]byte, 97)
-	x963[0] = 0x04
-	ecKey.X.FillBytes(x963[1:33])
-	ecKey.Y.FillBytes(x963[33:65])
-	ecKey.D.FillBytes(x963[65:97])
 
-	// Store private key in Keychain (key never written to disk).
-	if st := cgoSaveKey(x963); st != errSecSuccess() && st != errSecDuplicate() {
+	// Store private key in Keychain via SecItemImport (PEM input). The
+	// key never lands on disk — only the in-memory PEM bytes cross cgo.
+	if st := cgoSaveKey(keyPEM); st != errSecSuccess() && st != errSecDuplicate() {
 		return fmt.Errorf("storing key in Keychain: OSStatus %d", st)
 	}
 
