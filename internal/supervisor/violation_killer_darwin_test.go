@@ -275,6 +275,58 @@ func TestViolationKiller_NilEvents_ReturnsError(t *testing.T) {
 	}
 }
 
+// stubStreamer wraps a chan ViolationEvent into a LogStreamer for tests
+// that want to drive ViolationKiller via the Streamer field path.
+type stubStreamer struct {
+	ch  <-chan ViolationEvent
+	pid int
+}
+
+func (s *stubStreamer) Stream(_ context.Context, pid int) (<-chan ViolationEvent, error) {
+	s.pid = pid
+	return s.ch, nil
+}
+
+// TestViolationKiller_StreamerPath_Enforcing exercises the production wiring
+// where ViolationKiller calls Streamer.Stream(ctx, pid) itself rather than
+// receiving a pre-started channel via Events. Confirms the streamer is
+// invoked with the supervised PID and the kill-on-deny path still fires.
+func TestViolationKiller_StreamerPath_Enforcing(t *testing.T) {
+	src := make(chan ViolationEvent, 1)
+	streamer := &stubStreamer{ch: src}
+	rk := &recordingKiller{}
+
+	k := NewViolationKiller(ViolationKillerConfig{
+		PID:       321,
+		Streamer:  streamer,
+		Engine:    denyEngine{},
+		Enforcing: true,
+		Killer:    rk.kill,
+		Logger:    killerLogger(),
+	})
+
+	cancel, wait := runKiller(t, k)
+	defer cancel()
+
+	src <- ViolationEvent{PID: 321, Path: "/etc/shadow", Required: CapRead}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && len(rk.snapshot()) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if streamer.pid != 321 {
+		t.Errorf("Streamer.Stream pid = %d, want 321", streamer.pid)
+	}
+	calls := rk.snapshot()
+	if len(calls) != 1 || calls[0].pid != 321 || calls[0].sig != syscall.SIGKILL {
+		t.Errorf("expected SIGKILL(321), got %+v", calls)
+	}
+	cancel()
+	if err := wait(); err != nil {
+		t.Errorf("Run: %v", err)
+	}
+}
+
 // TestViolationKiller_NilEngine_DefaultsToDeny ensures a missing engine
 // (e.g. early bring-up before auth-engine wiring) still kills in enforcing
 // mode rather than silently dropping the violation.

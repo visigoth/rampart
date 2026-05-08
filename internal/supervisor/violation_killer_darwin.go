@@ -31,9 +31,15 @@ type ViolationKillerConfig struct {
 	// PID is the sandboxed child to potentially kill. Required.
 	PID int
 
-	// Events delivers live violation events for the child. The subsystem
-	// drains this channel until ctx is cancelled or the channel closes.
-	// Required.
+	// Streamer produces live violation events for the child. The subsystem
+	// calls Streamer.Stream(ctx, PID) at the top of Run and drains the
+	// returned channel until ctx is cancelled or the channel closes.
+	// Mutually exclusive with Events; one of the two must be set.
+	Streamer LogStreamer
+
+	// Events is a pre-started event source. Useful for tests that want to
+	// drive the killer with scripted events without going through a
+	// LogStreamer. Mutually exclusive with Streamer.
 	Events <-chan ViolationEvent
 
 	// Engine is consulted for each event. Required when Enforcing is true;
@@ -76,22 +82,30 @@ func NewViolationKiller(cfg ViolationKillerConfig) *ViolationKiller {
 // Name implements Subsystem.
 func (v *ViolationKiller) Name() string { return "macos-violation-killer" }
 
-// Run implements Subsystem. Blocks until ctx is cancelled, the Events channel
+// Run implements Subsystem. Blocks until ctx is cancelled, the event source
 // closes, or — in enforcing mode — a Deny decision triggers SIGKILL (after
 // which the subsystem returns nil; the supervisor's own cmd.Wait sees the
 // resulting child exit and ends the session).
 func (v *ViolationKiller) Run(ctx context.Context) error {
 	log := v.cfg.logger()
 
-	if v.cfg.Events == nil {
-		return fmt.Errorf("violation-killer: Events channel required")
+	events := v.cfg.Events
+	if events == nil {
+		if v.cfg.Streamer == nil {
+			return fmt.Errorf("violation-killer: Streamer or Events required")
+		}
+		ch, err := v.cfg.Streamer.Stream(ctx, v.cfg.PID)
+		if err != nil {
+			return fmt.Errorf("violation-killer: starting stream: %w", err)
+		}
+		events = ch
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case ev, ok := <-v.cfg.Events:
+		case ev, ok := <-events:
 			if !ok {
 				return nil
 			}
