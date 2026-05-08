@@ -87,9 +87,29 @@ func inferProfileFilesystemMode(profile *config.ProfileConfig) string {
 	return "none"
 }
 
-// inferProfileNetworkMode returns "filtered" if the profile has any network
-// configuration, "none" otherwise.
+// inferProfileNetworkMode reads the profile's declared network grants and
+// reports the abstract mode it is opting into:
+//
+//   - "full"     — the profile contains the literal "*" in allowed_domains.
+//                  This is the explicit opt-in to unrestricted network: no
+//                  proxy filtering, kernel allows raw outbound on darwin.
+//   - "filtered" — the profile lists any specific domains in allowed_domains,
+//                  or has any network { domain ... } block. The proxy is on
+//                  and applies the declared ACLs.
+//   - "none"     — the profile makes no network statement at all. Default
+//                  posture: zero outbound from the sandboxed child.
+//
+// Note "*" inside a network { domain "*" {} } block is NOT treated as the
+// full opt-in. That form is meant for structured ACLs that match all
+// domains (e.g. "any domain, but only GET"); it stays "filtered" so the
+// proxy applies the rules. Use allowed_domains = ["*"] when you really
+// want the proxy out of the path.
 func inferProfileNetworkMode(profile *config.ProfileConfig) string {
+	for _, d := range profile.AllowedDomains {
+		if d == "*" {
+			return "full"
+		}
+	}
 	if len(profile.AllowedDomains) > 0 {
 		return "filtered"
 	}

@@ -166,6 +166,12 @@ Field semantics:
 - The structured =network= block has the same grammar as in agents.
   Profile network rules are the runtime-authoritative source per TR16
   (the proxy applies the profile's rules verbatim).
+- =allowed_domains = ["*"]= is the explicit profile-side opt-in to the
+  =full= network mode: no proxy filtering, kernel allows raw outbound
+  on darwin. See [[*Network mode and the =*= convention][Network mode
+  and the =*= convention]] below — without this, the merge cannot
+  produce =full= and an agent's =network_mode = "full"= request is
+  always clamped to at most =filtered=.
 
 ** =defaults= block
 
@@ -192,7 +198,7 @@ Given an =agent= and a =profile=, rampart computes a =ResolvedPolicy=:
 | =write=         | Agent.write intersected with profile.write                                  |
 | =exec=          | Agent.exec intersected with profile.exec                                    |
 | =workdir=       | Profile.workdir, resolved on Linux                                          |
-| =network_mode=  | =min(agent.network_mode, profile-inferred)=                                  |
+| =network_mode=  | =min(agent.network_mode, profile-inferred)=. Profile mode is inferred: =allowed_domains= contains =*= → =full=; any other domains or =network= block → =filtered=; nothing → =none= |
 | =allowed_domains= | Intersection (prefix-matched) of agent.domains/network and profile equivalents |
 | =proxy_acls=    | Profile's =network=-block rules (TR16: profile is sole runtime authority)   |
 | =mitm_domains=  | From profile only                                                           |
@@ -203,6 +209,51 @@ intersection — they bypass the merge unconditionally. Use sparingly;
 they exist for one-off debugging, not for permanent grants. Persistent
 grants belong in HCL (use =rampart review= to fold accumulated runtime
 approvals back into the profile).
+
+* Network mode and the =*= convention
+
+A profile's network mode is inferred from what it declares — there is
+no =network_mode= attribute on profiles. The inference rules:
+
+| Profile declares                               | Inferred mode |
+|------------------------------------------------+---------------|
+| =allowed_domains= contains the literal =*=     | =full=        |
+| Any specific =allowed_domains= or =network= block | =filtered= |
+| Nothing about network                          | =none=        |
+
+The merged =network_mode= is =min(agent, profile-inferred)= over
+=none < filtered < full=. Concretely:
+
+- An agent declaring =network_mode = "full"= can only resolve to =full=
+  if the profile also opts in via =allowed_domains = ["*"]=. Without
+  that opt-in the agent is clamped to whatever the profile declares.
+- An agent declaring =network_mode = "filtered"= caps the result at
+  =filtered= even if the profile uses =["*"]=.
+
+What each mode does at runtime:
+
+- =none= — proxy not started; on darwin the SBPL emits no network
+  allow rules; on Linux bwrap's =--unshare-all= already isolates the
+  netns. The child has zero outbound.
+- =filtered= — proxy is started on a loopback port and =HTTP_PROXY= /
+  =HTTPS_PROXY= are injected into the child env. The proxy applies the
+  profile's =network { domain ... }= ACLs. On darwin the SBPL emits
+  per-domain =(allow network-outbound (remote tcp "<d>:*") ...)= for
+  each entry in =allowed_domains=. On Linux the netns is isolated so
+  outbound is only possible through the proxy.
+- =full= — on darwin the SBPL emits =(allow network*)= and the proxy
+  is /not/ started (no ACLs to apply); the child has direct
+  unrestricted outbound. *On Linux this mode is currently inert*:
+  =bwrap.go= always passes =--unshare-all= and there is no
+  =--share-net= path, so the child has no network regardless. Tracked
+  as a follow-up to make Linux honor =full=.
+
+Why =allowed_domains = ["*"]= rather than =network { domain "*" {} }=:
+the structured form is for ACLs that match all domains (e.g. "any
+domain, but only GET on /v1/**"). It keeps the proxy in the path so
+those rules can be applied. Putting =*= in the flat =allowed_domains=
+list says the opposite — "no filtering, take the proxy out of the
+path".
 
 * End-to-end example
 

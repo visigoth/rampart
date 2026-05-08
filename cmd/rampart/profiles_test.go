@@ -37,7 +37,7 @@ func TestEmbeddedProfiles_MatchSpecifications(t *testing.T) {
 		"planning.hcl": {
 			`agent "planning"`,
 			`filesystem   = "read-only"`,
-			`network_mode = "none"`, // FR7.2
+			`network_mode = "filtered"`, // FR7.2 — filtered for context lookup
 		},
 		"reviewing.hcl": {
 			`agent "reviewing"`,
