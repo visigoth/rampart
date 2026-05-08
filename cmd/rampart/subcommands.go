@@ -94,6 +94,7 @@ func initCmd() *cobra.Command {
 	var (
 		rotate       bool
 		force        bool
+		noCA         bool
 		projectName  string
 		installHooks bool
 		noGit        bool
@@ -112,8 +113,9 @@ On macOS, step 2 requires an interactive session — it is skipped in SSH or CI.
 
 Re-running on an already-initialized repo errors by default. Use --force to
 silently overwrite the .rampart/ scaffold (the CA is left alone). Use
---rotate when you also want to replace the existing CA. --install-hooks
-also installs tmux and shell hook templates.
+--rotate when you also want to replace the existing CA. --no-ca skips
+the MITM CA step entirely (handy over SSH where Keychain prompts can't
+appear). --install-hooks also installs tmux and shell hook templates.
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --- 1. Locate git root ---
@@ -155,29 +157,34 @@ also installs tmux and shell hook templates.
 			fmt.Fprintf(cmd.OutOrStdout(), "  .rampart/profiles/%s/default.hcl\n", projectName)
 
 			// --- 4. MITM CA ---
-			if err := ca.CheckInitAllowed(); err != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "Note: MITM CA skipped (%v)\n", err)
-			} else {
-				installed, err := ca.IsInstalled()
-				if err != nil {
-					return fmt.Errorf("checking CA status: %w", err)
-				}
-				if installed && !rotate {
-					fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: already installed.")
+			switch {
+			case noCA:
+				fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: skipped (--no-ca). Re-run 'rampart init --force' from a GUI session to install it later.")
+			default:
+				if err := ca.CheckInitAllowed(); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "Note: MITM CA skipped (%v)\n", err)
 				} else {
-					if installed {
-						if err := ca.RemoveCA(); err != nil {
-							return fmt.Errorf("removing existing CA: %w", err)
-						}
-					}
-					gen, err := ca.Generate()
+					installed, err := ca.IsInstalled()
 					if err != nil {
-						return fmt.Errorf("generating CA: %w", err)
+						return fmt.Errorf("checking CA status: %w", err)
 					}
-					if err := ca.SaveCA(gen.CertPEM, gen.KeyPEM); err != nil {
-						return fmt.Errorf("saving CA: %w", err)
+					if installed && !rotate {
+						fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: already installed.")
+					} else {
+						if installed {
+							if err := ca.RemoveCA(); err != nil {
+								return fmt.Errorf("removing existing CA: %w", err)
+							}
+						}
+						gen, err := ca.Generate()
+						if err != nil {
+							return fmt.Errorf("generating CA: %w", err)
+						}
+						if err := ca.SaveCA(gen.CertPEM, gen.KeyPEM); err != nil {
+							return fmt.Errorf("saving CA: %w", err)
+						}
+						fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: installed.")
 					}
-					fmt.Fprintln(cmd.OutOrStdout(), "MITM CA: installed.")
 				}
 			}
 
@@ -209,6 +216,7 @@ also installs tmux and shell hook templates.
 
 	cmd.Flags().BoolVar(&rotate, "rotate", false, "Replace existing .rampart/ scaffold and CA")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing .rampart/ scaffold (CA is left alone)")
+	cmd.Flags().BoolVar(&noCA, "no-ca", false, "Skip MITM CA install (useful over SSH where Keychain prompts can't appear)")
 	cmd.Flags().StringVar(&projectName, "project", "", "Project name (default: git repo basename)")
 	cmd.Flags().BoolVar(&installHooks, "install-hooks", false, "Install tmux and shell hooks")
 	cmd.Flags().BoolVar(&noGit, "no-git", false, "Scaffold without a git repository")
