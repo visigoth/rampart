@@ -30,9 +30,10 @@ func newAuthSubsystems(srv *session.Server, bridge *sessionBridge, enforcing boo
 	bridge.attachServer(srv)
 
 	engine := supervisor.NewEngine(supervisor.EngineConfig{
-		Enforcing: enforcing,
-		Applier:   supervisor.LogApplier{},
-		Publisher: bridge,
+		Enforcing:  enforcing,
+		Applier:    supervisor.LogApplier{},
+		Publisher:  bridge,
+		ConfigPath: defaultEngineConfigPath(),
 		// Hook left nil: hook subprocess wiring is a separate task.
 	})
 

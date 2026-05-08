@@ -74,7 +74,7 @@ func reviewCmd() *cobra.Command {
 		Use:   "review",
 		Short: "Review and act on accumulated escape hatch requests",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			configPath := filepath.Join(os.Getenv("HOME"), ".config", "rampart", "config.json")
+			configPath := defaultEngineConfigPath()
 			wd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("getting working directory: %w", err)
