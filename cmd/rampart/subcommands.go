@@ -1,19 +1,23 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/visigoth/rampart/internal/ca"
 	"github.com/visigoth/rampart/internal/config"
 	"github.com/visigoth/rampart/internal/proxy"
+	"github.com/visigoth/rampart/internal/session"
 )
 
 // versionCmd prints the binary version and exits.
@@ -48,17 +52,17 @@ With --approve or --deny, act on a specific escalation.
 With --watch, subscribe to future escalations in real time.
 `),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
 			switch {
 			case approveID != "":
-				fmt.Fprintf(cmd.OutOrStdout(), "approve: %s (not yet implemented)\n", approveID)
+				return runEscalationCommand(out, "approve", approveID)
 			case denyID != "":
-				fmt.Fprintf(cmd.OutOrStdout(), "deny: %s (not yet implemented)\n", denyID)
+				return runEscalationCommand(out, "deny", denyID)
 			case watch:
-				return runEscalationsWatch(cmd.OutOrStdout())
+				return runEscalationsWatch(cmd.Context(), out)
 			default:
-				fmt.Fprintln(cmd.OutOrStdout(), "escalations list (not yet implemented)")
+				return runEscalationsList(out)
 			}
-			return nil
 		},
 	}
 
@@ -70,20 +74,208 @@ With --watch, subscribe to future escalations in real time.
 	return cmd
 }
 
-// runEscalationsWatch holds open the rampart escalation pane until the
-// process is signalled. The actual real-time subscription protocol isn't
-// implemented yet — this exists so the tmux pane that hosts
-// `rampart escalations --watch` doesn't close instantly (which would
-// look to the user like the pane never appeared at all). When the
-// supervisor kills the pane via tmux kill-pane, we receive SIGHUP and
-// exit cleanly.
-func runEscalationsWatch(out io.Writer) error {
-	fmt.Fprintln(out, "rampart escalations — watching for events (Ctrl-C to exit)")
-	fmt.Fprintln(out, "(real-time subscription not yet implemented; pane held open)")
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	<-sigCh
+// runEscalationsList queries every active rampart session socket under
+// ~/.rampart/sessions/*.sock and prints a combined table of pending
+// escalations. No active sessions = "no active sessions" message and exit 0.
+func runEscalationsList(out io.Writer) error {
+	socks, err := session.ListActiveSockets()
+	if err != nil {
+		return fmt.Errorf("discovering session sockets: %w", err)
+	}
+	if len(socks) == 0 {
+		fmt.Fprintln(out, "no active rampart sessions found at ~/.rampart/sessions/*.sock")
+		return nil
+	}
+
+	type row struct {
+		sessionPID string
+		esc        session.OutboundEscalation
+	}
+	var rows []row
+	for _, s := range socks {
+		c, err := session.Dial(s)
+		if err != nil {
+			fmt.Fprintf(out, "warn: dial %s: %v\n", s, err)
+			continue
+		}
+		resp, err := c.List()
+		_ = c.Close()
+		if err != nil {
+			fmt.Fprintf(out, "warn: list %s: %v\n", s, err)
+			continue
+		}
+		pid := strings.TrimSuffix(filepath.Base(s), ".sock")
+		for _, e := range resp.Escalations {
+			rows = append(rows, row{sessionPID: pid, esc: e})
+		}
+	}
+
+	if len(rows) == 0 {
+		fmt.Fprintln(out, "no pending escalations across active sessions")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tSESSION\tOPERATION\tRESOURCE\tSTATUS\tTIMESTAMP")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n",
+			r.esc.ID, r.sessionPID, r.esc.Operation, r.esc.Resource, r.esc.Status, r.esc.Timestamp)
+	}
+	_ = tw.Flush()
 	return nil
+}
+
+// runEscalationCommand sends an approve or deny command to all active
+// session sockets. The session that owns the escalation responds with the
+// outcome ("approved", "denied", "persisted"); others reply "not_found".
+// Exit zero only if at least one session recognized the ID.
+func runEscalationCommand(out io.Writer, action, idStr string) error {
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid escalation ID %q: must be a positive integer", idStr)
+	}
+	socks, err := session.ListActiveSockets()
+	if err != nil {
+		return fmt.Errorf("discovering session sockets: %w", err)
+	}
+	if len(socks) == 0 {
+		return fmt.Errorf("no active rampart sessions found")
+	}
+
+	var owner string
+	var ownerResult string
+	for _, s := range socks {
+		c, err := session.Dial(s)
+		if err != nil {
+			fmt.Fprintf(out, "warn: dial %s: %v\n", s, err)
+			continue
+		}
+		ack, err := c.Command(action, id, "")
+		_ = c.Close()
+		if err != nil {
+			fmt.Fprintf(out, "warn: %s on %s: %v\n", action, s, err)
+			continue
+		}
+		if ack.Result != "not_found" {
+			owner = filepath.Base(s)
+			ownerResult = ack.Result
+			break
+		}
+	}
+
+	if owner == "" {
+		return fmt.Errorf("escalation %d not found in any active session", id)
+	}
+	fmt.Fprintf(out, "%s %d in %s: %s\n", action, id, strings.TrimSuffix(owner, ".sock"), ownerResult)
+	return nil
+}
+
+// runEscalationsWatch subscribes to every active session socket and streams
+// escalation events line-by-line until interrupted (SIGINT/SIGTERM/SIGHUP).
+// When invoked from a tmux pane created by the supervisor, the pane stays
+// open until rampart kills it via tmux kill-pane (which delivers SIGHUP).
+//
+// If no active sessions exist at start, watch holds the pane open with a
+// "no active sessions" banner and waits for one to appear (re-discovers
+// every 2s); this keeps the supervisor-spawned pane usable even if it
+// races the session socket startup.
+func runEscalationsWatch(ctx context.Context, out io.Writer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer cancel()
+
+	fmt.Fprintln(out, "rampart escalations — watching for events (Ctrl-C to exit)")
+
+	// Track which sockets we're already watching to avoid duplicates.
+	watching := map[string]context.CancelFunc{}
+	defer func() {
+		for _, c := range watching {
+			c()
+		}
+	}()
+
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	subscribe := func(sockPath string) {
+		if _, ok := watching[sockPath]; ok {
+			return
+		}
+		c, err := session.Dial(sockPath)
+		if err != nil {
+			return
+		}
+		subCtx, subCancel := context.WithCancel(ctx)
+		watching[sockPath] = subCancel
+		pid := strings.TrimSuffix(filepath.Base(sockPath), ".sock")
+		fmt.Fprintf(out, "[session %s] subscribed\n", pid)
+
+		go func() {
+			defer func() {
+				_ = c.Close()
+				subCancel()
+			}()
+			err := c.Watch(subCtx, func(msg map[string]any) error {
+				if r, ok := session.DecodeAsResponse(msg); ok {
+					if len(r.Escalations) == 0 {
+						fmt.Fprintf(out, "[session %s] no pending escalations\n", pid)
+						return nil
+					}
+					for _, e := range r.Escalations {
+						fmt.Fprintf(out, "[session %s] pending #%d %s %s (%s)\n",
+							pid, e.ID, e.Operation, e.Resource, e.Status)
+					}
+					return nil
+				}
+				if e, ok := session.DecodeAsEvent(msg); ok {
+					fmt.Fprintf(out, "[session %s] ESCALATION #%d %s %s (%s)\n",
+						pid, e.ID, e.Operation, e.Resource, e.Status)
+				}
+				return nil
+			})
+			if err != nil && err != context.Canceled {
+				fmt.Fprintf(out, "[session %s] watch ended: %v\n", pid, err)
+			}
+		}()
+	}
+
+	// Initial discovery.
+	if socks, err := session.ListActiveSockets(); err == nil {
+		if len(socks) == 0 {
+			fmt.Fprintln(out, "(no active sessions yet — waiting)")
+		}
+		for _, s := range socks {
+			subscribe(s)
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+			socks, err := session.ListActiveSockets()
+			if err != nil {
+				continue
+			}
+			seen := make(map[string]bool, len(socks))
+			for _, s := range socks {
+				seen[s] = true
+				subscribe(s)
+			}
+			// Drop subscriptions to sockets that have gone away.
+			for path, cancel := range watching {
+				if !seen[path] {
+					cancel()
+					delete(watching, path)
+					pid := strings.TrimSuffix(filepath.Base(path), ".sock")
+					fmt.Fprintf(out, "[session %s] disconnected\n", pid)
+				}
+			}
+		}
+	}
 }
 
 // reviewCmd is the rampart review subcommand (FR58, FR39).

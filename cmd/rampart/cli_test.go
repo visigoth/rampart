@@ -83,7 +83,12 @@ func TestVersionSubcommand(t *testing.T) {
 	}
 }
 
-func TestEscalationsSubcommand_NoArgs(t *testing.T) {
+func TestEscalationsSubcommand_NoArgs_NoActiveSessions(t *testing.T) {
+	// With no rampart supervisor running, the list path discovers no
+	// sockets and prints the empty-sessions message. Redirect HOME so we
+	// don't accidentally find a real socket from a parallel test or session.
+	t.Setenv("HOME", t.TempDir())
+
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"escalations"})
 	out := &bytes.Buffer{}
@@ -92,23 +97,46 @@ func TestEscalationsSubcommand_NoArgs(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("escalations: %v", err)
 	}
-	output := out.String()
-	if !strings.Contains(output, "escalations") && !strings.Contains(output, "not yet") {
-		t.Errorf("unexpected escalations output: %q", output)
+	if !strings.Contains(out.String(), "no active rampart sessions") {
+		t.Errorf("expected empty-sessions message; got: %q", out.String())
 	}
 }
 
-func TestEscalationsSubcommand_Approve(t *testing.T) {
+func TestEscalationsSubcommand_Approve_RejectsNonNumericID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"escalations", "--approve", "test-id-123"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
 	out := &bytes.Buffer{}
 	cmd.SetOut(out)
+	cmd.SetErr(out)
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("escalations --approve: %v", err)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for non-numeric escalation ID")
 	}
-	if !strings.Contains(out.String(), "test-id-123") {
-		t.Errorf("approve ID should appear in output: %q", out.String())
+	if !strings.Contains(err.Error(), "invalid escalation ID") {
+		t.Errorf("expected validation error, got: %v", err)
+	}
+}
+
+func TestEscalationsSubcommand_Approve_NumericID_NoSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"escalations", "--approve", "42"})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when no active sessions")
+	}
+	if !strings.Contains(err.Error(), "no active rampart sessions") {
+		t.Errorf("expected no-sessions error, got: %v", err)
 	}
 }
 
