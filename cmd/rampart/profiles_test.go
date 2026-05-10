@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/visigoth/rampart/internal/config"
 )
 
 // --- Tests: embedded content ---
@@ -70,6 +72,116 @@ func TestEmbeddedProfiles_ValidHCL(t *testing.T) {
 		if !strings.Contains(string(content), "agent") {
 			t.Errorf("%s: no 'agent' block found", name)
 		}
+	}
+}
+
+// TestEmbeddedModule_HarnessClaudeCode verifies the harness/claude-code
+// module ships with the entries claude actually needs at runtime: write
+// access to the configurable claude_dir, exec on /usr/bin/security (the
+// macOS Keychain CLI without which Bun's child_process.spawn fails with
+// EPERM at startup), and exec on the common claude binary install paths.
+func TestEmbeddedModule_HarnessClaudeCode(t *testing.T) {
+	modules, err := embeddedFileMap(embeddedModules, "assets/modules")
+	if err != nil {
+		t.Fatalf("embeddedFileMap: %v", err)
+	}
+	src, ok := modules["harness/claude-code.hcl"]
+	if !ok {
+		t.Fatal("harness/claude-code.hcl is not in the embedded module set")
+	}
+
+	required := []string{
+		"/usr/bin/security",                       // macOS Keychain CLI
+		"/opt/homebrew/bin/claude",                // Apple Silicon Cask
+		"/opt/homebrew/Caskroom/claude-code",      // version-rolling realpath
+		"/usr/local/bin/claude",                   // Intel mac + Linux
+		"/home/linuxbrew/.linuxbrew/bin/claude",   // Linuxbrew
+		"${var.claude_dir}",                       // overridable config dir
+	}
+	for _, want := range required {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("harness/claude-code.hcl missing required entry %q", want)
+		}
+	}
+}
+
+// TestEmbeddedModule_HarnessClaudeCode_ExpandsViaProfile drops the real
+// embedded harness/claude-code.hcl into a temp module tree, has a synthetic
+// profile `use` it, and verifies the resolved profile has both the security
+// CLI in its exec list and a claude_dir entry in its write list. This is
+// the end-to-end "module → profile resolution" check that catches breakage
+// from variable rename / schema drift, beyond just text substring matching.
+func TestEmbeddedModule_HarnessClaudeCode_ExpandsViaProfile(t *testing.T) {
+	modules, err := embeddedFileMap(embeddedModules, "assets/modules")
+	if err != nil {
+		t.Fatalf("embeddedFileMap: %v", err)
+	}
+	moduleSrc, ok := modules["harness/claude-code.hcl"]
+	if !ok {
+		t.Fatal("harness/claude-code.hcl missing from embedded modules")
+	}
+
+	gitRoot := t.TempDir()
+	globalDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".rampart", "profiles", "p"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	moduleDir := filepath.Join(globalDir, "modules", "harness")
+	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleDir, "claude-code.hcl"), moduleSrc, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	profileHCL := `
+profile "default" {
+  workdir = "."
+  use "harness/claude-code" {
+    claude_dir = "/Users/test/.claude"
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(gitRoot, ".rampart", "profiles", "p", "default.hcl"),
+		[]byte(profileHCL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := config.NewRegistry(gitRoot, globalDir)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	p, err := reg.ResolveProfile("p/default")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+
+	// /usr/bin/security must be exec'able — this is the keychain CLI claude
+	// invokes at startup on macOS.
+	hasSecurity := false
+	for _, e := range p.Exec {
+		if e == "/usr/bin/security" {
+			hasSecurity = true
+			break
+		}
+	}
+	if !hasSecurity {
+		t.Errorf("expected /usr/bin/security in Exec; got %v", p.Exec)
+	}
+
+	// claude_dir override flows through to Write.
+	hasClaudeDir := false
+	for _, w := range p.Write {
+		if w == "/Users/test/.claude" {
+			hasClaudeDir = true
+			break
+		}
+	}
+	if !hasClaudeDir {
+		t.Errorf("expected /Users/test/.claude in Write (claude_dir override); got %v", p.Write)
 	}
 }
 
@@ -142,6 +254,7 @@ func TestExtractModules_FirstRun_PreservesSubdirectoryTree(t *testing.T) {
 		"ai/gemini.hcl",
 		"system/base.hcl",
 		"network/any.hcl",
+		"harness/claude-code.hcl",
 	}
 	for _, rel := range wants {
 		path := filepath.Join(dir, rel)
