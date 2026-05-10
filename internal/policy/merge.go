@@ -126,23 +126,66 @@ func inferProfileFilesystemMode(profile *config.ProfileConfig) string {
 	return "none"
 }
 
-// inferProfileNetworkMode returns "filtered" if the profile has any network
-// configuration, "none" otherwise.
+// inferProfileNetworkMode derives the profile's abstract network mode from
+// its declarations:
 //
-// Note: "full" is a virtual mode that the profile inference cannot produce.
-// An agent's network_mode = "full" request is therefore always clamped to
-// at most the profile's declared mode. Profiles wanting to grant
-// effectively-unrestricted network should use "filtered" with a wildcard
-// pattern (e.g. network { domain "*" { allow ... } }) — the proxy stays in
-// the path and the ACL covers any host.
+//   - A bare wildcard ("*" or "**") with no path rules in either
+//     allowed_domains or a network { domain "*" {} } block opts the profile
+//     into "full" mode — the proxy can be skipped entirely on the platform
+//     backend. This is the explicit "I want unrestricted network" knob.
+//   - Any other allowed_domains entry, or any network { domain ... } block
+//     (including a wildcard with method/path rules), produces "filtered" —
+//     the proxy stays in the path and ACLs apply.
+//   - Empty or no network config produces "none".
+//
+// "full" is honoured by the sandbox backends (Seatbelt and bwrap) by
+// skipping the proxy injection step entirely; an agent declaring
+// network_mode = "full" can still be clamped down by the profile's mode.
 func inferProfileNetworkMode(profile *config.ProfileConfig) string {
-	if len(profile.AllowedDomains) > 0 {
-		return "filtered"
+	hasFullDomain := false
+	hasFilteredDomain := false
+
+	for _, d := range profile.AllowedDomains {
+		if d == "*" || d == "**" {
+			hasFullDomain = true
+		} else {
+			hasFilteredDomain = true
+		}
 	}
-	if profile.Network != nil && len(profile.Network.Domains) > 0 {
-		return "filtered"
+	if profile.Network != nil {
+		for _, d := range profile.Network.Domains {
+			isWildcard := d.Pattern == "*" || d.Pattern == "**"
+			hasRules := false
+			for _, r := range d.Allow {
+				if len(r.Paths) > 0 || r.Method != "" {
+					hasRules = true
+					break
+				}
+			}
+			if !hasRules {
+				for _, r := range d.Deny {
+					if len(r.Paths) > 0 || r.Method != "" {
+						hasRules = true
+						break
+					}
+				}
+			}
+			if isWildcard && !hasRules {
+				hasFullDomain = true
+			} else {
+				hasFilteredDomain = true
+			}
+		}
 	}
-	return "none"
+
+	switch {
+	case hasFilteredDomain:
+		return "filtered"
+	case hasFullDomain:
+		return "full"
+	default:
+		return "none"
+	}
 }
 
 // minFilesystemMode returns the less permissive of two filesystem modes.

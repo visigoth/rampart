@@ -583,6 +583,98 @@ func TestMerge_NoTLSMITM_NilCLILeavesProfileAlone(t *testing.T) {
 	}
 }
 
+// --- network mode inference (incl. wildcard → full) ---
+
+func TestMerge_NetworkMode_WildcardAllowedDomain_IsFull(t *testing.T) {
+	// `allowed_domains = ["*"]` opts the profile into "full" mode — the
+	// proxy can be skipped entirely. : this is the explicit
+	// "I want unrestricted network" knob.
+	a := agent("admin", "none", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.AllowedDomains = []string{"*"}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if rp.NetworkMode != "full" {
+		t.Errorf("NetworkMode = %q, want %q", rp.NetworkMode, "full")
+	}
+}
+
+func TestMerge_NetworkMode_EmptyWildcardDomainBlock_IsFull(t *testing.T) {
+	// `network { domain "*" {} }` (no methods/rules) is also the explicit
+	// full-mode opt-in form.
+	a := agent("admin", "none", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.Network = &config.NetworkConfig{
+			Domains: []config.DomainConfig{
+				{Pattern: "*"},
+			},
+		}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if rp.NetworkMode != "full" {
+		t.Errorf("NetworkMode = %q, want %q", rp.NetworkMode, "full")
+	}
+}
+
+func TestMerge_NetworkMode_WildcardWithRules_StaysFiltered(t *testing.T) {
+	// network/any-style: wildcard with methods AND paths is a filtering
+	// declaration, not a full-mode opt-in. The proxy should stay in path.
+	a := agent("admin", "none", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.Network = &config.NetworkConfig{
+			Domains: []config.DomainConfig{
+				{
+					Pattern: "*",
+					Allow: []config.RuleConfig{
+						{Method: "GET", Paths: []string{"/**"}},
+					},
+				},
+			},
+		}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if rp.NetworkMode != "filtered" {
+		t.Errorf("NetworkMode = %q, want %q (rules present)", rp.NetworkMode, "filtered")
+	}
+}
+
+func TestMerge_NetworkMode_WildcardPlusSpecific_StaysFiltered(t *testing.T) {
+	// Mixing "*" with a specific allowlist entry is treated as filtering —
+	// the user is hedging, so don't silently elevate to full mode.
+	a := agent("admin", "none", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.AllowedDomains = []string{"*", "example.com"}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if rp.NetworkMode != "filtered" {
+		t.Errorf("NetworkMode = %q, want %q (specific entry present)", rp.NetworkMode, "filtered")
+	}
+}
+
+func TestMerge_NetworkMode_NoNetwork_IsNone(t *testing.T) {
+	a := agent("admin", "none", "full")
+	p := profile("permissive", ".")
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if rp.NetworkMode != "none" {
+		t.Errorf("NetworkMode = %q, want %q", rp.NetworkMode, "none")
+	}
+}
+
 // --- pathCovers helper tests ---
 
 func TestPathCovers(t *testing.T) {

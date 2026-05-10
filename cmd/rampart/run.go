@@ -50,7 +50,13 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	// be injected into the child's environment before exec; the supervisor's
 	// Phase 5 starts the child before fatal subsystems run, so deferring
 	// proxy.Start to a goroutine inside Run would race the child.
-	if len(cp.Policy.ProxyACLs) > 0 {
+	//
+	// Skipped when NetworkMode is "full" — the policy has explicitly opted
+	// out of filtering (via `allowed_domains = ["*"]` or an empty wildcard
+	// `network { domain "*" {} }` block). The Seatbelt template already
+	// emits `(allow network*)` for full mode, so the proxy would only add
+	// latency without enforcing anything.
+	if len(cp.Policy.ProxyACLs) > 0 && cp.Policy.NetworkMode != "full" {
 		ps, env, err := startProxyForPolicy(cp)
 		if err != nil {
 			return 1, err
