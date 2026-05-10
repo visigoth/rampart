@@ -18,6 +18,14 @@
 ;; Basic signal delivery so the supervisor can kill the child.
 (allow signal (target self))
 
+;; Allow fork. process-exec is still gated per-binary by the policy-
+;; generated rules below — without process-fork allowed, posix_spawn
+;; (fork+exec) returns EPERM regardless of any process-exec rule, so
+;; the agent can't spawn ANY subprocess (git, npm, /usr/bin/security,
+;; etc.). Seatbelt's process-fork is binary (no path filter); the
+;; per-binary lockdown comes from process-exec.
+(allow process-fork)
+
 ;; Mach IPC — allow broad lookup for system frameworks (NG11).
 (allow mach-lookup)
 

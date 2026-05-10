@@ -116,6 +116,22 @@ func TestCompileSBPL_EmptyPolicy(t *testing.T) {
 	}
 }
 
+// TestCompileSBPL_AllowsProcessFork covers a load-bearing baseline: with
+// (deny default), Seatbelt requires (allow process-fork) for posix_spawn
+// to succeed at all. Without it, agents inside the sandbox can't spawn
+// any subprocess (not even the binaries listed in their exec policy)
+// and crash at startup with EPERM during fork+exec.
+func TestCompileSBPL_AllowsProcessFork(t *testing.T) {
+	rp := &policy.ResolvedPolicy{}
+	sbpl, err := CompileSBPL(rp, false)
+	if err != nil {
+		t.Fatalf("CompileSBPL: %v", err)
+	}
+	if !strings.Contains(sbpl, "(allow process-fork)") {
+		t.Error("baseline SBPL must include (allow process-fork) — without it, posix_spawn fails with EPERM regardless of process-exec rules")
+	}
+}
+
 func TestCompileSBPL_ParamPlaceholders(t *testing.T) {
 	rp := &policy.ResolvedPolicy{}
 	sbpl, err := CompileSBPL(rp, false)
