@@ -116,6 +116,28 @@ func TestCompileSBPL_EmptyPolicy(t *testing.T) {
 	}
 }
 
+// TestCompileSBPL_AllowsTTYIoctlAndWrite covers the second load-bearing
+// baseline for interactive agents: TIOCSETA (raw mode), TIOCGWINSZ
+// (window size), and writing characters to the tty all need file-ioctl
+// + file-write-data on /dev. Without these, claude (and any other TUI
+// agent) fails with "setRawMode failed with errno: 1" at startup and
+// never becomes interactive in the user's terminal.
+func TestCompileSBPL_AllowsTTYIoctlAndWrite(t *testing.T) {
+	rp := &policy.ResolvedPolicy{}
+	sbpl, err := CompileSBPL(rp, false)
+	if err != nil {
+		t.Fatalf("CompileSBPL: %v", err)
+	}
+	if !strings.Contains(sbpl, `(allow file-ioctl
+    (subpath "/dev"))`) {
+		t.Error("baseline SBPL must include file-ioctl on /dev for TTY tcsetattr / TIOCGWINSZ")
+	}
+	if !strings.Contains(sbpl, `(allow file-write-data
+    (subpath "/dev"))`) {
+		t.Error("baseline SBPL must include file-write-data on /dev for writing to TTY and /dev/null")
+	}
+}
+
 // TestCompileSBPL_AllowsProcessFork covers a load-bearing baseline: with
 // (deny default), Seatbelt requires (allow process-fork) for posix_spawn
 // to succeed at all. Without it, agents inside the sandbox can't spawn

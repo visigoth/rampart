@@ -37,6 +37,16 @@
 (allow file-ioctl (literal "/dev/dtracehelper"))
 (allow file-write-data (literal "/dev/dtracehelper"))
 
+;; Terminal devices and other /dev character devices. Interactive agents
+;; need write + ioctl on the controlling tty (TIOCSETA for raw mode,
+;; TIOCGWINSZ for window size) and write on /dev/null for common
+;; redirects. /dev is already broadly readable above; granting
+;; write-data + ioctl here is the missing piece for TUIs.
+(allow file-ioctl
+    (subpath "/dev"))
+(allow file-write-data
+    (subpath "/dev"))
+
 ;; System library and framework reads.
 (allow file-read*
     (subpath "/usr/lib")

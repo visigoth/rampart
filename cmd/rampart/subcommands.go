@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -52,7 +54,7 @@ With --watch, subscribe to future escalations in real time.
 			case denyID != "":
 				fmt.Fprintf(cmd.OutOrStdout(), "deny: %s (not yet implemented)\n", denyID)
 			case watch:
-				fmt.Fprintln(cmd.OutOrStdout(), "escalations --watch (not yet implemented)")
+				return runEscalationsWatch(cmd.OutOrStdout())
 			default:
 				fmt.Fprintln(cmd.OutOrStdout(), "escalations list (not yet implemented)")
 			}
@@ -66,6 +68,22 @@ With --watch, subscribe to future escalations in real time.
 	cmd.MarkFlagsMutuallyExclusive("approve", "deny", "watch")
 
 	return cmd
+}
+
+// runEscalationsWatch holds open the rampart escalation pane until the
+// process is signalled. The actual real-time subscription protocol isn't
+// implemented yet — this exists so the tmux pane that hosts
+// `rampart escalations --watch` doesn't close instantly (which would
+// look to the user like the pane never appeared at all). When the
+// supervisor kills the pane via tmux kill-pane, we receive SIGHUP and
+// exit cleanly.
+func runEscalationsWatch(out io.Writer) error {
+	fmt.Fprintln(out, "rampart escalations — watching for events (Ctrl-C to exit)")
+	fmt.Fprintln(out, "(real-time subscription not yet implemented; pane held open)")
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	<-sigCh
+	return nil
 }
 
 // reviewCmd is the rampart review subcommand (FR58, FR39).
