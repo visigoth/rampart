@@ -2,7 +2,7 @@
 
 variable "cargo_home" {
   type        = string
-  default     = ".cargo"
+  default     = "~/.cargo"
   description = "Cargo's CARGO_HOME directory (writable cache + registry)."
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/visigoth/rampart/internal/config"
+	"github.com/visigoth/rampart/internal/paths"
 	"github.com/visigoth/rampart/internal/policy"
 )
 
@@ -58,11 +59,55 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 		return nil, fmt.Errorf("compiling policy: %w", err)
 	}
 
+	// Resolve all paths in the policy: ~/foo → $HOME/foo, "." → gitRoot,
+	// other relative paths → gitRoot/<path>, absolute paths unchanged.
+	// Symlinks are resolved as far as the filesystem allows. This must
+	// happen after MergePolicy because intersection is path-string based;
+	// agents in practice carry no concrete paths so ordering is fine.
+	if err := resolvePolicyPaths(rp, gitRoot, startDir); err != nil {
+		return nil, fmt.Errorf("resolving policy paths: %w", err)
+	}
+
 	return &compiledPolicy{
 		Policy:      rp,
 		AgentName:   agentName,
 		ProfileName: profileName,
 	}, nil
+}
+
+// resolvePolicyPaths expands every path entry in rp (Workdir, Read, Write,
+// Exec, CLIExtraPaths) using paths.Resolve. The base for plain relative
+// paths is gitRoot if set, else the launch directory. ~/ expands to the
+// user's home directory.
+func resolvePolicyPaths(rp *policy.ResolvedPolicy, gitRoot, fallback string) error {
+	base := gitRoot
+	if base == "" {
+		base = fallback
+	}
+	ctx := paths.Context{GitRoot: base}
+
+	if rp.Workdir != "" {
+		w, err := paths.Resolve(rp.Workdir, ctx)
+		if err != nil {
+			return fmt.Errorf("workdir: %w", err)
+		}
+		rp.Workdir = w
+	}
+
+	var err error
+	if rp.Read, err = paths.ResolveAll(rp.Read, ctx); err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	if rp.Write, err = paths.ResolveAll(rp.Write, ctx); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if rp.Exec, err = paths.ResolveAll(rp.Exec, ctx); err != nil {
+		return fmt.Errorf("exec: %w", err)
+	}
+	if rp.CLIExtraPaths, err = paths.ResolveAll(rp.CLIExtraPaths, ctx); err != nil {
+		return fmt.Errorf("cli extra paths: %w", err)
+	}
+	return nil
 }
 
 // runDryRun implements --dry-run: load+compile policy, print human-readable

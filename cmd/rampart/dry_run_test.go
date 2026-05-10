@@ -10,6 +10,100 @@ import (
 	"github.com/visigoth/rampart/internal/policy"
 )
 
+// --- resolvePolicyPaths ---
+
+// resolvedJoin returns what paths.Resolve would produce for base + leaf:
+// resolve symlinks of base (which exists), append the (non-existent) leaf.
+// On macOS, this turns /var/folders/... into /private/var/folders/...
+func resolvedJoin(t *testing.T, base, leaf string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		resolved = base
+	}
+	return filepath.Join(resolved, leaf)
+}
+
+func TestResolvePolicyPaths_TildeExpandsToHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	rp := &policy.ResolvedPolicy{
+		Read:  []string{"~/.gitconfig"},
+		Write: []string{"~/.claude"},
+		Exec:  []string{"~/bin/local-tool"},
+	}
+	if err := resolvePolicyPaths(rp, "/some/git/root", "/cwd"); err != nil {
+		t.Fatalf("resolvePolicyPaths: %v", err)
+	}
+
+	if want := resolvedJoin(t, home, ".gitconfig"); rp.Read[0] != want {
+		t.Errorf("Read[0] = %q, want %q", rp.Read[0], want)
+	}
+	if want := resolvedJoin(t, home, ".claude"); rp.Write[0] != want {
+		t.Errorf("Write[0] = %q, want %q", rp.Write[0], want)
+	}
+	if want := resolvedJoin(t, home, "bin/local-tool"); rp.Exec[0] != want {
+		t.Errorf("Exec[0] = %q, want %q", rp.Exec[0], want)
+	}
+}
+
+func TestResolvePolicyPaths_RelativeJoinsGitRoot(t *testing.T) {
+	gitRoot := t.TempDir()
+	rp := &policy.ResolvedPolicy{
+		Read:  []string{".git", "node_modules"},
+		Write: []string{"."},
+	}
+	if err := resolvePolicyPaths(rp, gitRoot, "/should-not-be-used"); err != nil {
+		t.Fatalf("resolvePolicyPaths: %v", err)
+	}
+
+	if want := resolvedJoin(t, gitRoot, ".git"); rp.Read[0] != want {
+		t.Errorf("Read[0] = %q, want %q", rp.Read[0], want)
+	}
+
+	// "." resolves to the gitRoot itself, fully evaluated.
+	wantWrite, _ := filepath.EvalSymlinks(gitRoot)
+	if wantWrite == "" {
+		wantWrite = gitRoot
+	}
+	if rp.Write[0] != wantWrite {
+		t.Errorf("Write[0] = %q, want %q (gitRoot)", rp.Write[0], wantWrite)
+	}
+}
+
+func TestResolvePolicyPaths_AbsolutePathUnchanged(t *testing.T) {
+	rp := &policy.ResolvedPolicy{
+		Exec: []string{"/usr/bin/security", "/opt/homebrew/bin/claude"},
+	}
+	if err := resolvePolicyPaths(rp, "/some/git/root", "/cwd"); err != nil {
+		t.Fatalf("resolvePolicyPaths: %v", err)
+	}
+	// /usr/bin/security exists, EvalSymlinks resolves it. The key invariant
+	// is that an absolute system path is not relocated under git root.
+	for _, p := range rp.Exec {
+		if !strings.HasPrefix(p, "/") {
+			t.Errorf("absolute path became non-absolute: %q", p)
+		}
+		if strings.Contains(p, "/some/git/root") {
+			t.Errorf("absolute path was joined to gitRoot: %q", p)
+		}
+	}
+}
+
+func TestResolvePolicyPaths_FallsBackToCWDWhenNoGitRoot(t *testing.T) {
+	cwd := t.TempDir()
+	rp := &policy.ResolvedPolicy{
+		Write: []string{"foo"},
+	}
+	if err := resolvePolicyPaths(rp, "", cwd); err != nil {
+		t.Fatalf("resolvePolicyPaths: %v", err)
+	}
+	if want := resolvedJoin(t, cwd, "foo"); rp.Write[0] != want {
+		t.Errorf("Write[0] = %q, want %q (fallback CWD)", rp.Write[0], want)
+	}
+}
+
 // --- printHumanReadable table-driven tests ---
 
 func TestPrintHumanReadable_SimplePolicy(t *testing.T) {

@@ -22,7 +22,7 @@ exec = [
 
 write = [
   "${var.node_modules}",
-  ".npm",
+  "~/.npm",
 ]
 
 network {

@@ -15,7 +15,7 @@ exec = [
 write = [
   "go.mod",
   "go.sum",
-  ".go",
+  "~/go",
 ]
 
 network {

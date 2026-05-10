@@ -14,8 +14,8 @@
 
 variable "claude_dir" {
   type        = string
-  default     = ".claude"
-  description = "Claude Code's config + sessions + credentials dir (relative to $HOME or absolute)."
+  default     = "~/.claude"
+  description = "Claude Code's config + sessions + credentials dir."
 }
 
 # ~/.claude tree: settings, sessions, .credentials.json, projects/,

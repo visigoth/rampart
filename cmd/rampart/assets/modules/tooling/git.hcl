@@ -6,14 +6,16 @@
 # misrepresent what git actually does.
 
 read = [
+  # Project-level (workdir-relative).
   ".git",
-  ".gitconfig",
   ".gitignore",
   ".gitmodules",
-  ".ssh/known_hosts",
-  ".ssh/config",
-  ".ssh/id_ed25519.pub",
-  ".ssh/id_rsa.pub",
+  # User-level (HOME-relative).
+  "~/.gitconfig",
+  "~/.ssh/known_hosts",
+  "~/.ssh/config",
+  "~/.ssh/id_ed25519.pub",
+  "~/.ssh/id_rsa.pub",
 ]
 
 exec = [
