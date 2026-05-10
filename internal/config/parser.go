@@ -158,8 +158,11 @@ func validateProfileConfig(p *ProfileConfig, path string) error {
 	if p.Name == "" {
 		return fmt.Errorf("%s: profile block label (name) must not be empty", path)
 	}
-	if p.Workdir == "" {
-		return fmt.Errorf("%s: profile %q: workdir is required", path, p.Name)
+	// workdir is required at parse time UNLESS the profile inherits from
+	// another via `extends`, in which case the parent supplies it. Final
+	// validation happens after extends merging in the registry.
+	if p.Workdir == "" && p.Extends == "" {
+		return fmt.Errorf("%s: profile %q: workdir is required (or set extends)", path, p.Name)
 	}
 	if err := validatePathGlobs(p.Read, path, "profile", p.Name, "read"); err != nil {
 		return err

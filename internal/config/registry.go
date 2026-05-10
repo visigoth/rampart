@@ -64,22 +64,50 @@ func (r *Registry) ResolveAgent(name string) (*AgentConfig, error) {
 }
 
 // ResolveProfile resolves a profile by name ("project/name", "project/default",
-// "project" as shorthand for "project/default", or bare "name").
+// "project" as shorthand for "project/default", or bare "name"). When the
+// resolved profile has an `extends` attribute, the parent profile is
+// recursively resolved and its grants merged in. Cycles are rejected.
 func (r *Registry) ResolveProfile(name string) (*ProfileConfig, error) {
+	return r.resolveProfile(name, map[string]bool{})
+}
+
+// resolveProfile is the inner recursive form. visiting tracks the chain of
+// profile names currently being resolved (to detect inheritance cycles).
+func (r *Registry) resolveProfile(name string, visiting map[string]bool) (*ProfileConfig, error) {
+	p, err := r.lookupProfile(name)
+	if err != nil {
+		return nil, err
+	}
+	if p.Extends == "" {
+		return p, nil
+	}
+	if visiting[name] {
+		return nil, fmt.Errorf("profile inheritance cycle through %q", name)
+	}
+	visiting[name] = true
+	parent, err := r.resolveProfile(p.Extends, visiting)
+	if err != nil {
+		return nil, fmt.Errorf("resolving parent of %q (extends = %q): %w", name, p.Extends, err)
+	}
+	merged := mergeInheritedProfile(parent, p)
+	if merged.Workdir == "" {
+		return nil, fmt.Errorf("profile %q: workdir is required (parent %q did not supply one either)", name, p.Extends)
+	}
+	return merged, nil
+}
+
+// lookupProfile is the bare lookup that ResolveProfile / resolveProfile
+// share — no extends handling.
+func (r *Registry) lookupProfile(name string) (*ProfileConfig, error) {
 	if p, ok := r.profiles[name]; ok {
 		return p, nil
 	}
-
-	// "project" with no slash: try "project/default".
 	if !strings.Contains(name, "/") {
 		if p, ok := r.profiles[name+"/default"]; ok {
 			return p, nil
 		}
 		return nil, fmt.Errorf("profile %q not found", name)
 	}
-
-	// Qualified: "project/name" — if the name part is "default", we've already
-	// tried the canonical key; try the shorthand file .rampart/<project>.hcl.
 	project, pname, _ := strings.Cut(name, "/")
 	if pname == "default" {
 		shorthandKey := "shorthand:" + project
@@ -88,6 +116,37 @@ func (r *Registry) ResolveProfile(name string) (*ProfileConfig, error) {
 		}
 	}
 	return nil, fmt.Errorf("profile %q not found in project scope", name)
+}
+
+// mergeInheritedProfile produces a new ProfileConfig that overlays child on
+// top of parent. Child's identity (Name, SourceFile) is preserved; path
+// lists are concatenated then deduped; workdir uses child if set else
+// parent; no_tls_mitm is OR'd; network domains are concatenated.
+func mergeInheritedProfile(parent, child *ProfileConfig) *ProfileConfig {
+	merged := *child
+	merged.Read = dedupAppend(parent.Read, child.Read)
+	merged.Write = dedupAppend(parent.Write, child.Write)
+	merged.Exec = dedupAppend(parent.Exec, child.Exec)
+	merged.AllowedDomains = dedupAppend(parent.AllowedDomains, child.AllowedDomains)
+	merged.MitmDomains = dedupAppend(parent.MitmDomains, child.MitmDomains)
+	merged.Toolchains = dedupAppend(parent.Toolchains, child.Toolchains)
+	if merged.Workdir == "" {
+		merged.Workdir = parent.Workdir
+	}
+	merged.NoTLSMITM = parent.NoTLSMITM || child.NoTLSMITM
+	if parent.Network != nil || child.Network != nil {
+		merged.Network = &NetworkConfig{}
+		if parent.Network != nil {
+			merged.Network.Domains = append(merged.Network.Domains, parent.Network.Domains...)
+		}
+		if child.Network != nil {
+			merged.Network.Domains = append(merged.Network.Domains, child.Network.Domains...)
+		}
+	}
+	// Use blocks have already been expanded into the path lists at index
+	// time, so there's nothing more to merge from `Use` itself.
+	merged.Extends = "" // no longer relevant on the merged result
+	return &merged
 }
 
 // AgentInfo describes a registered agent for listing/inspection. A single

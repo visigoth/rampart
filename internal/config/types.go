@@ -25,7 +25,13 @@ type AgentConfig struct {
 // ProfileConfig is ENT2: a project profile loaded from HCL.
 type ProfileConfig struct {
 	Name           string          `hcl:",label"`
-	Workdir        string          `hcl:"workdir,attr"`
+	// Extends names another profile (by the same key form ResolveProfile
+	// accepts: "project/name", "project" shorthand, or bare "name") whose
+	// grants this profile inherits. Path lists, network domains, and
+	// allowed/mitm domains are concatenated with dedup; workdir uses child
+	// if non-empty else parent; no_tls_mitm is OR'd. Cycles are rejected.
+	Extends        string          `hcl:"extends,optional"`
+	Workdir        string          `hcl:"workdir,optional"`
 	Read           []string        `hcl:"read,optional"`
 	Write          []string        `hcl:"write,optional"`
 	Exec           []string        `hcl:"exec,optional"`

@@ -442,6 +442,232 @@ func TestRegistry_ListProfiles(t *testing.T) {
 	}
 }
 
+// --- Profile inheritance (extends) ---
+
+// inheritanceFixture builds a minimal git+rampart tree with two profiles:
+// a parent and a child whose `extends` references it. Returns the gitRoot.
+func inheritanceFixture(t *testing.T, parentHCL, childHCL string) string {
+	t.Helper()
+	gitRoot := t.TempDir()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("inheritanceFixture: %v", err)
+		}
+	}
+	must(os.MkdirAll(filepath.Join(gitRoot, ".git"), 0o755))
+	must(os.MkdirAll(filepath.Join(gitRoot, ".rampart", "profiles", "p"), 0o755))
+	must(os.WriteFile(filepath.Join(gitRoot, ".rampart", "profiles", "p", "parent.hcl"), []byte(parentHCL), 0o644))
+	must(os.WriteFile(filepath.Join(gitRoot, ".rampart", "profiles", "p", "child.hcl"), []byte(childHCL), 0o644))
+	return gitRoot
+}
+
+func TestRegistry_Extends_ChildInheritsParentPaths(t *testing.T) {
+	parent := `
+profile "parent" {
+  workdir = "."
+  read    = ["/etc/parent"]
+  write   = ["/tmp/parent"]
+  exec    = ["/usr/bin/parent"]
+}
+`
+	child := `
+profile "child" {
+  extends = "p/parent"
+  read    = ["/etc/child"]
+}
+`
+	gitRoot := inheritanceFixture(t, parent, child)
+	reg, err := NewRegistry(gitRoot, "")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	c, err := reg.ResolveProfile("p/child")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+
+	// Path lists are additive: parent first, child appended (deduped).
+	wantRead := []string{"/etc/parent", "/etc/child"}
+	if !sliceEqual(c.Read, wantRead) {
+		t.Errorf("Read = %v, want %v", c.Read, wantRead)
+	}
+	wantWrite := []string{"/tmp/parent"}
+	if !sliceEqual(c.Write, wantWrite) {
+		t.Errorf("Write = %v, want %v (inherited)", c.Write, wantWrite)
+	}
+	wantExec := []string{"/usr/bin/parent"}
+	if !sliceEqual(c.Exec, wantExec) {
+		t.Errorf("Exec = %v, want %v (inherited)", c.Exec, wantExec)
+	}
+	// Child without explicit workdir uses parent's.
+	if c.Workdir != "." {
+		t.Errorf("Workdir = %q, want %q (inherited from parent)", c.Workdir, ".")
+	}
+}
+
+func TestRegistry_Extends_ChildWorkdirOverridesParent(t *testing.T) {
+	parent := `
+profile "parent" {
+  workdir = "."
+}
+`
+	child := `
+profile "child" {
+  extends = "p/parent"
+  workdir = "/abs/elsewhere"
+}
+`
+	gitRoot := inheritanceFixture(t, parent, child)
+	reg, err := NewRegistry(gitRoot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := reg.ResolveProfile("p/child")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if c.Workdir != "/abs/elsewhere" {
+		t.Errorf("Workdir = %q, want %q (child override)", c.Workdir, "/abs/elsewhere")
+	}
+}
+
+func TestRegistry_Extends_NoTLSMITM_OredAcrossInheritance(t *testing.T) {
+	// Parent with no_tls_mitm = true should propagate to child even if
+	// child doesn't mention it (OR semantics — child can loosen, can't
+	// silently tighten in v1).
+	parent := `
+profile "parent" {
+  workdir     = "."
+  no_tls_mitm = true
+}
+`
+	child := `
+profile "child" {
+  extends = "p/parent"
+}
+`
+	gitRoot := inheritanceFixture(t, parent, child)
+	reg, err := NewRegistry(gitRoot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := reg.ResolveProfile("p/child")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if !c.NoTLSMITM {
+		t.Error("NoTLSMITM = false, want true (inherited from parent)")
+	}
+}
+
+func TestRegistry_Extends_NetworkDomainsConcatenate(t *testing.T) {
+	parent := `
+profile "parent" {
+  workdir = "."
+  network {
+    domain "api.anthropic.com" {
+      allow "POST" {}
+    }
+  }
+}
+`
+	child := `
+profile "child" {
+  extends = "p/parent"
+  network {
+    domain "registry.npmjs.org" {
+      allow "GET" {}
+    }
+  }
+}
+`
+	gitRoot := inheritanceFixture(t, parent, child)
+	reg, err := NewRegistry(gitRoot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := reg.ResolveProfile("p/child")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if c.Network == nil || len(c.Network.Domains) != 2 {
+		t.Fatalf("expected 2 domains; got %+v", c.Network)
+	}
+	patterns := []string{c.Network.Domains[0].Pattern, c.Network.Domains[1].Pattern}
+	want := []string{"api.anthropic.com", "registry.npmjs.org"}
+	if !sliceEqual(patterns, want) {
+		t.Errorf("Domain patterns = %v, want %v (parent first)", patterns, want)
+	}
+}
+
+func TestRegistry_Extends_CycleDetected(t *testing.T) {
+	a := `
+profile "a" {
+  workdir = "."
+  extends = "p/b"
+}
+`
+	b := `
+profile "b" {
+  extends = "p/a"
+}
+`
+	gitRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".rampart", "profiles", "p"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitRoot, ".rampart", "profiles", "p", "a.hcl"), []byte(a), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitRoot, ".rampart", "profiles", "p", "b.hcl"), []byte(b), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistry(gitRoot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reg.ResolveProfile("p/a")
+	if err == nil {
+		t.Fatal("expected cycle error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("expected cycle error message, got: %v", err)
+	}
+}
+
+func TestRegistry_Extends_MissingParent(t *testing.T) {
+	child := `
+profile "child" {
+  extends = "p/nonexistent"
+}
+`
+	gitRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(gitRoot, ".rampart", "profiles", "p"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitRoot, ".rampart", "profiles", "p", "child.hcl"), []byte(child), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistry(gitRoot, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reg.ResolveProfile("p/child")
+	if err == nil {
+		t.Fatal("expected error for missing parent, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error should mention the missing parent name: %v", err)
+	}
+}
+
 func TestRegistry_MultiAgentFileAndSingleFileIndexed(t *testing.T) {
 	// agents.hcl AND agents/<name>.hcl in the same dir are both indexed (FR9.2).
 	tmpdir, globalDir := buildFixtureTree(t)
