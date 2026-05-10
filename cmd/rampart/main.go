@@ -91,6 +91,7 @@ See 'rampart help <subcommand>' for more information.
 		reviewCmd(),
 		initCmd(),
 		uninstallCmd(),
+		listCmd(),
 		testCmd(),
 		launcherCmd(),
 		presencePushCmd(),

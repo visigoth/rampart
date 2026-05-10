@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/visigoth/rampart/internal/ca"
@@ -308,6 +310,128 @@ func presencePushCmd() *cobra.Command {
 			return pushPresenceEvent(sock, args[0])
 		},
 	}
+}
+
+// listCmd is the rampart list subcommand: shows registered agents or profiles
+// from all scopes (global, repo, project) discovered from the current git root.
+func listCmd() *cobra.Command {
+	var namesOnly bool
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List registered agents or profiles",
+		Long: strings.TrimSpace(`
+List the agents or profiles visible to rampart from the current working directory.
+
+Subcommands:
+  agents    Show all agents from global, repo, and project scope
+  profiles  Show all profiles defined in the current repo
+`),
+	}
+
+	cmd.AddCommand(listAgentsCmd(&namesOnly))
+	cmd.AddCommand(listProfilesCmd(&namesOnly))
+	cmd.PersistentFlags().BoolVar(&namesOnly, "names-only", false, "Print only resolution names, one per line (no source paths)")
+	return cmd
+}
+
+func listAgentsCmd(namesOnly *bool) *cobra.Command {
+	return &cobra.Command{
+		Use:   "agents",
+		Short: "List all registered agents",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, err := openRegistry()
+			if err != nil {
+				return err
+			}
+			printAgents(cmd.OutOrStdout(), reg.ListAgents(), *namesOnly)
+			return nil
+		},
+	}
+}
+
+func listProfilesCmd(namesOnly *bool) *cobra.Command {
+	return &cobra.Command{
+		Use:   "profiles",
+		Short: "List all registered profiles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reg, err := openRegistry()
+			if err != nil {
+				return err
+			}
+			printProfiles(cmd.OutOrStdout(), reg.ListProfiles(), *namesOnly)
+			return nil
+		},
+	}
+}
+
+// openRegistry loads the config registry from the current git root and the
+// global share directory. Used by `rampart list` subcommands.
+func openRegistry() (*config.Registry, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getting working directory: %w", err)
+	}
+	gitRoot := config.FindGitRoot(wd)
+	reg, err := config.NewRegistry(gitRoot, config.GlobalShareDir())
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	return reg, nil
+}
+
+func printAgents(out io.Writer, infos []config.AgentInfo, namesOnly bool) {
+	if namesOnly {
+		for _, a := range infos {
+			for _, name := range a.Aliases {
+				fmt.Fprintln(out, name)
+			}
+		}
+		return
+	}
+	if len(infos) == 0 {
+		fmt.Fprintln(out, "no agents registered")
+		return
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "AGENT\tSOURCE")
+	for _, a := range infos {
+		fmt.Fprintf(tw, "%s\t%s\n", strings.Join(a.Aliases, ", "), displayPath(a.SourceFile))
+	}
+	_ = tw.Flush()
+}
+
+func printProfiles(out io.Writer, infos []config.ProfileInfo, namesOnly bool) {
+	if namesOnly {
+		for _, p := range infos {
+			for _, name := range p.Aliases {
+				fmt.Fprintln(out, name)
+			}
+		}
+		return
+	}
+	if len(infos) == 0 {
+		fmt.Fprintln(out, "no profiles registered")
+		return
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PROFILE\tSOURCE")
+	for _, p := range infos {
+		fmt.Fprintf(tw, "%s\t%s\n", strings.Join(p.Aliases, ", "), displayPath(p.SourceFile))
+	}
+	_ = tw.Flush()
+}
+
+// displayPath replaces $HOME prefix with ~ for compactness.
+func displayPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" && strings.HasPrefix(p, home) {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	return p
 }
 
 // testCmd is the rampart test subcommand.

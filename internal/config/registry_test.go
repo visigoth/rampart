@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -349,6 +350,96 @@ func TestFindGitRoot_NotFound(t *testing.T) {
 	root := FindGitRoot(tmpdir)
 	// Either "" or some parent with .git is acceptable — just don't panic.
 	_ = root
+}
+
+func TestRegistry_ListAgents(t *testing.T) {
+	tmpdir, globalDir := buildFixtureTree(t)
+	reg, err := NewRegistry(tmpdir, globalDir)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+
+	infos := reg.ListAgents()
+	if len(infos) == 0 {
+		t.Fatal("ListAgents returned empty slice")
+	}
+
+	// Every entry's source file must point at a real .hcl path.
+	seen := map[string]bool{}
+	for _, a := range infos {
+		if len(a.Aliases) == 0 {
+			t.Errorf("AgentInfo with no aliases: %+v", a)
+		}
+		if a.SourceFile == "" {
+			t.Errorf("agent %v has empty SourceFile", a.Aliases)
+		}
+		for _, alias := range a.Aliases {
+			if seen[alias] {
+				t.Errorf("alias %q appears in more than one AgentInfo", alias)
+			}
+			seen[alias] = true
+		}
+	}
+
+	// Slice must be sorted by canonical alias.
+	for i := 1; i < len(infos); i++ {
+		if infos[i-1].Aliases[0] > infos[i].Aliases[0] {
+			t.Errorf("ListAgents not sorted: %q before %q", infos[i-1].Aliases[0], infos[i].Aliases[0])
+		}
+	}
+
+	// Fixture has a project-scoped "project-agent" — verify it's listed under
+	// its qualified name "myproject/project-agent" (and possibly the bare alias).
+	foundQualified := false
+	for _, a := range infos {
+		for _, alias := range a.Aliases {
+			if alias == "myproject/project-agent" {
+				foundQualified = true
+			}
+		}
+	}
+	if !foundQualified {
+		t.Errorf("expected myproject/project-agent in ListAgents, got: %+v", infos)
+	}
+}
+
+func TestRegistry_ListProfiles(t *testing.T) {
+	tmpdir, globalDir := buildFixtureTree(t)
+	reg, err := NewRegistry(tmpdir, globalDir)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+
+	infos := reg.ListProfiles()
+	if len(infos) == 0 {
+		t.Fatal("ListProfiles returned empty slice")
+	}
+
+	for _, p := range infos {
+		for _, alias := range p.Aliases {
+			if strings.HasPrefix(alias, "shorthand:") {
+				t.Errorf("internal shorthand key %q must be filtered out of ListProfiles", alias)
+			}
+		}
+		if p.SourceFile == "" {
+			t.Errorf("profile %v has empty SourceFile", p.Aliases)
+		}
+	}
+
+	// myproject/default and myproject/custom should both be present.
+	want := map[string]bool{"myproject/default": false, "myproject/custom": false}
+	for _, p := range infos {
+		for _, alias := range p.Aliases {
+			if _, ok := want[alias]; ok {
+				want[alias] = true
+			}
+		}
+	}
+	for k, found := range want {
+		if !found {
+			t.Errorf("expected profile %q in ListProfiles, got: %+v", k, infos)
+		}
+	}
 }
 
 func TestRegistry_MultiAgentFileAndSingleFileIndexed(t *testing.T) {

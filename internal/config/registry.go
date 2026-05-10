@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -87,6 +88,63 @@ func (r *Registry) ResolveProfile(name string) (*ProfileConfig, error) {
 		}
 	}
 	return nil, fmt.Errorf("profile %q not found in project scope", name)
+}
+
+// AgentInfo describes a registered agent for listing/inspection. A single
+// underlying AgentConfig may be reachable under multiple resolution names
+// (e.g. a project agent registered as both "myproj/coding" and the bare
+// "coding" alias) — those are reported together in Aliases.
+type AgentInfo struct {
+	Aliases    []string // all resolution names, sorted; Aliases[0] is the canonical display name
+	SourceFile string
+}
+
+// ProfileInfo describes a registered profile. Internal shorthand keys
+// (used by ResolveProfile to back the bare "project" form for shorthand
+// .rampart/<project>.hcl files) are filtered out.
+type ProfileInfo struct {
+	Aliases    []string // all resolution names, sorted; Aliases[0] is the canonical display name
+	SourceFile string
+}
+
+// ListAgents returns every registered agent, deduplicated by underlying
+// config pointer. Aliases within an entry are sorted; the slice itself is
+// sorted by the canonical (first) alias.
+func (r *Registry) ListAgents() []AgentInfo {
+	byPtr := map[*AgentConfig][]string{}
+	for k, a := range r.agents {
+		byPtr[a] = append(byPtr[a], k)
+	}
+	out := make([]AgentInfo, 0, len(byPtr))
+	for a, keys := range byPtr {
+		sort.Strings(keys)
+		out = append(out, AgentInfo{Aliases: keys, SourceFile: a.SourceFile})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Aliases[0] < out[j].Aliases[0]
+	})
+	return out
+}
+
+// ListProfiles returns every registered profile, deduplicated by underlying
+// config pointer. The internal "shorthand:<project>" keys are excluded.
+func (r *Registry) ListProfiles() []ProfileInfo {
+	byPtr := map[*ProfileConfig][]string{}
+	for k, p := range r.profiles {
+		if strings.HasPrefix(k, "shorthand:") {
+			continue
+		}
+		byPtr[p] = append(byPtr[p], k)
+	}
+	out := make([]ProfileInfo, 0, len(byPtr))
+	for p, keys := range byPtr {
+		sort.Strings(keys)
+		out = append(out, ProfileInfo{Aliases: keys, SourceFile: p.SourceFile})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Aliases[0] < out[j].Aliases[0]
+	})
+	return out
 }
 
 // DefaultAgent returns the default agent name from defaults.hcl (may be "").

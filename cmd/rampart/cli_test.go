@@ -154,6 +154,81 @@ func TestInitSubcommand(t *testing.T) {
 	}
 }
 
+func TestListSubcommand_Agents(t *testing.T) {
+	gitDir, origDir := makeTempGitRepo(t)
+	defer os.Chdir(origDir)
+	if err := os.Chdir(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	// Drop in a minimal repo-wide agents.hcl so the list has something to print.
+	rampart := filepath.Join(gitDir, ".rampart")
+	if err := os.MkdirAll(rampart, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agents := `agent "tester" {
+  description  = "test agent"
+  filesystem   = "none"
+  network_mode = "none"
+}
+`
+	if err := os.WriteFile(filepath.Join(rampart, "agents.hcl"), []byte(agents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"list", "agents"})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if !strings.Contains(out.String(), "tester") {
+		t.Errorf("expected 'tester' in output: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "AGENT") {
+		t.Errorf("expected table header AGENT in output: %q", out.String())
+	}
+}
+
+func TestListSubcommand_Profiles_NamesOnly(t *testing.T) {
+	gitDir, origDir := makeTempGitRepo(t)
+	defer os.Chdir(origDir)
+	if err := os.Chdir(gitDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+
+	profileDir := filepath.Join(gitDir, ".rampart", "profiles", "demo")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prof := `profile "default" {
+  workdir = "."
+}
+`
+	if err := os.WriteFile(filepath.Join(profileDir, "default.hcl"), []byte(prof), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"list", "profiles", "--names-only"})
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list profiles: %v", err)
+	}
+	got := strings.TrimSpace(out.String())
+	if got != "demo/default" {
+		t.Errorf("--names-only output: got %q, want exactly %q", got, "demo/default")
+	}
+}
+
 // makeTempGitRepo creates a temp directory with a .git subdirectory.
 // Returns the temp dir path and the caller's original working directory.
 func makeTempGitRepo(t *testing.T) (string, string) {
