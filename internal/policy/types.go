@@ -25,7 +25,13 @@ type ResolvedPolicy struct {
 	NetworkMode    string   // none | filtered | full
 	AllowedDomains []string // From profile
 	ProxyACLs      []config.DomainConfig // From profile network block
-	MitmDomains    []string              // From profile
+	MitmDomains    []string              // From profile (cleared when NoTLSMITM is true)
+
+	// NoTLSMITM disables TLS interception. HTTPS gets domain-only filtering
+	// at CONNECT time; path rules and mitm_domains are ignored on HTTPS.
+	// HTTP path rules are unaffected. Source: profile.NoTLSMITM, optionally
+	// overridden by MergeOptions.NoTLSMITM (CLI --no-tls-mitm).
+	NoTLSMITM bool
 
 	Toolchains []string
 
@@ -51,4 +57,10 @@ type MergeOptions struct {
 
 	// Strict causes compile-time validation mismatches to be errors instead of warnings.
 	Strict bool
+
+	// NoTLSMITM, when non-nil, overrides the profile's no_tls_mitm setting.
+	// Bound from the --no-tls-mitm CLI flag only when explicitly passed
+	// (cobra flag.Changed) so the default false doesn't accidentally undo a
+	// profile that opted in.
+	NoTLSMITM *bool
 }

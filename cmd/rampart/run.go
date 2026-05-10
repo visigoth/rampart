@@ -120,6 +120,15 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 func startProxyForPolicy(cp *compiledPolicy) (*proxySubsystem, []string, error) {
 	rules := proxy.CompileACLRules(cp.Policy.ProxyACLs, cp.Policy.MitmDomains)
 
+	// no_tls_mitm: force every rule to tunnel-mode regardless of paths or
+	// mitm_domains. The proxy still enforces domain-level allow/deny at
+	// CONNECT, but skips TLS decryption — so no CA is needed.
+	if cp.Policy.NoTLSMITM {
+		for i := range rules {
+			rules[i].MITM = false
+		}
+	}
+
 	var caCert *tls.Certificate
 	mitmRequired := false
 	for _, r := range rules {

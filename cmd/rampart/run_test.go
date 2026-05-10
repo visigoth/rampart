@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/visigoth/rampart/internal/config"
+	"github.com/visigoth/rampart/internal/policy"
 )
 
 // TestRunLaunch_EmptyArgs returns an error without touching the filesystem.
@@ -47,6 +50,41 @@ func TestRunLaunch_NoProfile_Errors(t *testing.T) {
 	if !strings.Contains(err.Error(), "profile") {
 		t.Errorf("expected profile-related error, got: %v", err)
 	}
+}
+
+// TestStartProxyForPolicy_NoTLSMITM_SkipsCA verifies that --no-tls-mitm
+// (or profile no_tls_mitm) lets the proxy start without an installed CA,
+// even when the profile's network rules would otherwise auto-promote
+// domains to MITM via path matching.
+func TestStartProxyForPolicy_NoTLSMITM_SkipsCA(t *testing.T) {
+	// No CA on disk for this test.
+	t.Setenv("HOME", t.TempDir())
+
+	cp := &compiledPolicy{
+		AgentName:   "admin",
+		ProfileName: "permissive",
+		Policy: &policy.ResolvedPolicy{
+			Mode:      "enforcing",
+			NoTLSMITM: true,
+			ProxyACLs: []config.DomainConfig{
+				{
+					Pattern: "*",
+					Allow: []config.RuleConfig{
+						{Method: "GET", Paths: []string{"/**"}},
+					},
+				},
+			},
+		},
+	}
+
+	sub, _, err := startProxyForPolicy(cp)
+	if err != nil {
+		t.Fatalf("startProxyForPolicy with NoTLSMITM should succeed without CA; got: %v", err)
+	}
+	if sub == nil {
+		t.Fatal("expected a non-nil proxy subsystem")
+	}
+	defer sub.p.Close()
 }
 
 // TestRootCmd_Launch_ReachesRunLaunch_NotPlaceholder verifies the wiring no

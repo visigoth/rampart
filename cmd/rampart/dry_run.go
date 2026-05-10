@@ -124,6 +124,9 @@ func printHumanReadable(cp *compiledPolicy, out io.Writer) {
 
 	fmt.Fprintln(out, "\n--- network ---")
 	fmt.Fprintf(out, "mode: %s\n", rp.NetworkMode)
+	if rp.NoTLSMITM {
+		fmt.Fprintln(out, "tls mitm: disabled (no_tls_mitm)")
+	}
 	if len(rp.AllowedDomains) > 0 {
 		fmt.Fprintln(out, "domains:  [source: profile]")
 		for _, d := range rp.AllowedDomains {

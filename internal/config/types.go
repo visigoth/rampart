@@ -31,6 +31,11 @@ type ProfileConfig struct {
 	Exec           []string        `hcl:"exec,optional"`
 	AllowedDomains []string        `hcl:"allowed_domains,optional"`
 	MitmDomains    []string        `hcl:"mitm_domains,optional"`
+	// NoTLSMITM disables TLS interception (man-in-the-middle) for this profile.
+	// HTTPS still flows through the proxy with domain-level allow/deny at
+	// CONNECT time, but path rules are not enforced for HTTPS (HTTP is
+	// unaffected). When true, no MITM CA is required at runtime.
+	NoTLSMITM      bool            `hcl:"no_tls_mitm,optional"`
 	Toolchains     []string        `hcl:"toolchains,optional"`
 	Network        *NetworkConfig  `hcl:"network,block"`
 	Remain         hcl.Body        `hcl:",remain"`

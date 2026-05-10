@@ -473,6 +473,116 @@ func TestMerge_WorkdirFromProfile(t *testing.T) {
 	}
 }
 
+// --- no_tls_mitm ---
+
+func TestMerge_NoTLSMITM_ProfileTrue_PathRulesWarn(t *testing.T) {
+	a := agent("admin", "read-write", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.NoTLSMITM = true
+		p.Network = &config.NetworkConfig{
+			Domains: []config.DomainConfig{
+				{
+					Pattern: "*",
+					Allow: []config.RuleConfig{
+						{Method: "GET", Paths: []string{"/**"}},
+					},
+				},
+			},
+		}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if !rp.NoTLSMITM {
+		t.Error("NoTLSMITM: got false, want true (from profile)")
+	}
+	found := false
+	for _, w := range rp.Warnings {
+		if strings.Contains(w, "no_tls_mitm") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning about no_tls_mitm; got: %v", rp.Warnings)
+	}
+}
+
+func TestMerge_NoTLSMITM_ClearsMitmDomains(t *testing.T) {
+	a := agent("admin", "read-write", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.NoTLSMITM = true
+		p.MitmDomains = []string{"api.anthropic.com"}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if len(rp.MitmDomains) != 0 {
+		t.Errorf("MitmDomains should be cleared when NoTLSMITM=true; got %v", rp.MitmDomains)
+	}
+	found := false
+	for _, w := range rp.Warnings {
+		if strings.Contains(w, "no_tls_mitm") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected warning when MitmDomains is cleared; got: %v", rp.Warnings)
+	}
+}
+
+func TestMerge_NoTLSMITM_NoWarningWithoutPathRulesOrMitmDomains(t *testing.T) {
+	// With no_tls_mitm=true but neither path rules nor mitm_domains, there's
+	// nothing being silently suppressed — no warning should fire.
+	a := agent("admin", "read-write", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.NoTLSMITM = true
+		p.AllowedDomains = []string{"api.anthropic.com"}
+	})
+	rp, err := MergePolicy(a, p, defaultOpts())
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	for _, w := range rp.Warnings {
+		if strings.Contains(w, "no_tls_mitm") {
+			t.Errorf("no_tls_mitm warning should NOT fire here; got: %v", rp.Warnings)
+		}
+	}
+}
+
+func TestMerge_NoTLSMITM_CLIOverridesProfile(t *testing.T) {
+	a := agent("admin", "read-write", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.NoTLSMITM = false
+	})
+	tru := true
+	rp, err := MergePolicy(a, p, MergeOptions{NoTLSMITM: &tru})
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if !rp.NoTLSMITM {
+		t.Error("CLI override should set NoTLSMITM=true even when profile is false")
+	}
+}
+
+func TestMerge_NoTLSMITM_NilCLILeavesProfileAlone(t *testing.T) {
+	a := agent("admin", "read-write", "full")
+	p := profileWith("permissive", ".", func(p *config.ProfileConfig) {
+		p.NoTLSMITM = true
+	})
+	// MergeOptions.NoTLSMITM nil — flag wasn't passed.
+	rp, err := MergePolicy(a, p, MergeOptions{})
+	if err != nil {
+		t.Fatalf("MergePolicy: %v", err)
+	}
+	if !rp.NoTLSMITM {
+		t.Error("nil CLI override should leave profile NoTLSMITM=true intact")
+	}
+}
+
 // --- pathCovers helper tests ---
 
 func TestPathCovers(t *testing.T) {

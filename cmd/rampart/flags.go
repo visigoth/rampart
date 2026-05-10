@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/visigoth/rampart/internal/policy"
 )
 
@@ -26,6 +27,10 @@ type runFlags struct {
 	extraDomains  []string
 	envVars       []string
 	noEnv         bool
+	noTLSMITM     bool
+	// flagSet is bound at attach time so toMergeOptions can ask whether
+	// individual flags were explicitly passed (via cobra.Flags().Changed).
+	flagSet *pflag.FlagSet
 }
 
 // attachRunFlags adds all run-mode flags to cmd and returns a pointer to the
@@ -48,18 +53,27 @@ func attachRunFlags(cmd *cobra.Command) *runFlags {
 	cmd.Flags().StringArrayVar(&f.extraDomains, "allow-domain", nil, "Add a domain to policy unconditionally (bypass intersection)")
 	cmd.Flags().StringArrayVar(&f.envVars, "env", nil, "Augment env allowlist for this invocation (VAR or VAR=value)")
 	cmd.Flags().BoolVar(&f.noEnv, "no-env", false, "Strip all user/repo env additions; pass only built-in vars")
+	cmd.Flags().BoolVar(&f.noTLSMITM, "no-tls-mitm", false, "Skip TLS interception: tunnel HTTPS untouched, enforce domain-only filtering. HTTP path rules unaffected. No MITM CA required.")
 
+	f.flagSet = cmd.Flags()
 	return f
 }
 
 // toMergeOptions converts CLI flags to a policy.MergeOptions.
 func (f *runFlags) toMergeOptions() policy.MergeOptions {
-	return policy.MergeOptions{
+	opts := policy.MergeOptions{
 		Mode:         f.mode,
 		ExtraPaths:   f.extraPaths,
 		ExtraDomains: f.extraDomains,
 		Strict:       f.strict,
 	}
+	// Only forward --no-tls-mitm when it was explicitly passed; an unpassed
+	// false must not override a profile that opted in.
+	if f.flagSet != nil && f.flagSet.Changed("no-tls-mitm") {
+		v := f.noTLSMITM
+		opts.NoTLSMITM = &v
+	}
+	return opts
 }
 
 // ExecutionMode is the detected or forced execution context.

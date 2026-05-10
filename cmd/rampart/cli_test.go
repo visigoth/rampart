@@ -31,7 +31,7 @@ func TestRootCmd_AllFlagsPresent(t *testing.T) {
 	required := []string{
 		"agent", "profile", "mode", "strict", "verbose", "dry-run",
 		"no-escape-hatch", "new-session", "new-window", "no-tmux", "headless",
-		"allow-path", "allow-domain", "env", "no-env",
+		"allow-path", "allow-domain", "env", "no-env", "no-tls-mitm",
 	}
 	for _, name := range required {
 		if flags.Lookup(name) == nil {

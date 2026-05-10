@@ -36,8 +36,12 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 		Mode:            opts.Mode,
 		Workdir:         profile.Workdir,
 		MitmDomains:     profile.MitmDomains,
+		NoTLSMITM:       profile.NoTLSMITM,
 		CLIExtraPaths:   append([]string(nil), opts.ExtraPaths...),
 		CLIExtraDomains: append([]string(nil), opts.ExtraDomains...),
+	}
+	if opts.NoTLSMITM != nil {
+		rp.NoTLSMITM = *opts.NoTLSMITM
 	}
 	if rp.Mode == "" {
 		rp.Mode = "enforcing"
@@ -72,7 +76,42 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 	}
 	rp.Warnings = warnings
 
+	// --- no_tls_mitm: clear MitmDomains and warn if rules would be ignored ---
+	if rp.NoTLSMITM {
+		hadMitmDomains := len(rp.MitmDomains) > 0
+		hadPathRules := profileHasPathRules(profile)
+		rp.MitmDomains = nil
+		if hadMitmDomains || hadPathRules {
+			rp.Warnings = append(rp.Warnings, fmt.Sprintf(
+				"profile %q: no_tls_mitm disables TLS interception; path rules and mitm_domains will not be enforced on HTTPS (HTTP is unaffected)",
+				profile.Name))
+		}
+	}
+
 	return rp, nil
+}
+
+// profileHasPathRules reports whether the profile's network block contains
+// any allow/deny rule with a non-empty paths list. Such rules would otherwise
+// auto-promote a domain to MITM in CompileACLRules; with no_tls_mitm they
+// are silently dropped on HTTPS, so callers warn the user.
+func profileHasPathRules(profile *config.ProfileConfig) bool {
+	if profile.Network == nil {
+		return false
+	}
+	for _, d := range profile.Network.Domains {
+		for _, r := range d.Allow {
+			if len(r.Paths) > 0 {
+				return true
+			}
+		}
+		for _, r := range d.Deny {
+			if len(r.Paths) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // inferProfileFilesystemMode derives the profile's abstract filesystem mode

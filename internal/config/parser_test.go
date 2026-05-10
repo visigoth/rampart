@@ -238,6 +238,42 @@ profile "default" {
 	}
 }
 
+func TestParseProfileFile_NoTLSMITM(t *testing.T) {
+	// Round-trips when the attribute is set.
+	src := []byte(`
+profile "permissive" {
+  workdir     = "."
+  no_tls_mitm = true
+  network {
+    domain "*" {
+      allow "GET" { paths = ["/**"] }
+    }
+  }
+}
+`)
+	profiles, err := ParseProfileFile("p.hcl", src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !profiles[0].NoTLSMITM {
+		t.Errorf("NoTLSMITM: got false, want true")
+	}
+
+	// Defaults to false when omitted.
+	src2 := []byte(`
+profile "default" {
+  workdir = "."
+}
+`)
+	profiles2, err := ParseProfileFile("p.hcl", src2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if profiles2[0].NoTLSMITM {
+		t.Errorf("NoTLSMITM should default to false when omitted")
+	}
+}
+
 func TestParseProfileFile_MissingWorkdir(t *testing.T) {
 	src := []byte(`
 profile "bad" {
