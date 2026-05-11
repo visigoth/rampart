@@ -67,31 +67,31 @@ func TestTmuxPaneSubsystem_NameStable(t *testing.T) {
 	}
 }
 
-// TestTmuxPaneSubsystem_RunSetsUpAndClosesOnCancel verifies the subsystem
-// creates the pane, blocks until ctx is cancelled, then tears it down.
-func TestTmuxPaneSubsystem_RunSetsUpAndClosesOnCancel(t *testing.T) {
+// TestTmuxPaneSubsystem_HoldsOpenUntilCancelThenCloses confirms the
+// subsystem blocks until ctx is cancelled and then closes the pane it was
+// given. The pane is now created by run.go BEFORE supervisor.Run starts
+// the child (so the agent's pty geometry is settled at startup), and the
+// subsystem only owns the teardown.
+func TestTmuxPaneSubsystem_HoldsOpenUntilCancelThenCloses(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux/default,1234,0")
 
 	r := newFakeTmuxRunner()
-	ts := &tmuxPaneSubsystem{
-		cfg: tmux.PaneConfig{
-			PaneCommand:    "rampart escalations --watch",
-			RunnerOverride: r,
-		},
+	pane, err := tmux.Setup(tmux.PaneConfig{
+		PaneCommand:    "rampart escalations --watch",
+		RunnerOverride: r,
+	})
+	if err != nil {
+		t.Fatalf("tmux.Setup: %v", err)
 	}
+	if !r.called("tmux", "split-window") {
+		t.Fatal("setup did not invoke split-window")
+	}
+
+	ts := &tmuxPaneSubsystem{pane: pane}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- ts.Run(ctx) }()
-
-	// Wait for setup to register the split-window call.
-	deadline := time.Now().Add(2 * time.Second)
-	for !r.called("tmux", "split-window") && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !r.called("tmux", "split-window") {
-		t.Fatal("subsystem never invoked tmux split-window")
-	}
 
 	// Run must not return before cancel.
 	select {
@@ -116,25 +116,54 @@ func TestTmuxPaneSubsystem_RunSetsUpAndClosesOnCancel(t *testing.T) {
 	}
 }
 
-// TestTmuxPaneSubsystem_RunReturnsErrWhenTmuxMissing surfaces a recoverable
-// error so the supervisor logs and degrades to interactive-direct (TR117).
-func TestTmuxPaneSubsystem_RunReturnsErrWhenTmuxMissing(t *testing.T) {
+// TestTmuxPaneSubsystem_SplitWindowKeepsAgentFocused verifies the pane
+// creation uses -d so tmux doesn't auto-focus the new (watch) pane —
+// otherwise the user's keystrokes would route to the watch pane instead
+// of the agent.
+func TestTmuxPaneSubsystem_SplitWindowKeepsAgentFocused(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux/default,1234,0")
 
 	r := newFakeTmuxRunner()
-	r.hasTmux = false
-	ts := &tmuxPaneSubsystem{
-		cfg: tmux.PaneConfig{
-			PaneCommand:    "rampart escalations --watch",
-			RunnerOverride: r,
-		},
+	_, err := tmux.Setup(tmux.PaneConfig{
+		PaneCommand:    "rampart escalations --watch",
+		RunnerOverride: r,
+	})
+	if err != nil {
+		t.Fatalf("tmux.Setup: %v", err)
 	}
 
-	err := ts.Run(context.Background())
-	if err == nil {
-		t.Fatal("expected error when tmux missing")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	foundDFlag := false
+	for _, c := range r.calls {
+		if len(c) >= 2 && c[0] == "tmux" && c[1] == "split-window" {
+			joined := strings.Join(c, " ")
+			if strings.Contains(joined, " -d") {
+				foundDFlag = true
+				break
+			}
+		}
 	}
-	if err != tmux.ErrTmuxNotFound {
-		t.Errorf("err = %v, want ErrTmuxNotFound", err)
+	if !foundDFlag {
+		t.Errorf("split-window must include -d to keep agent pane focused; calls: %v", r.calls)
+	}
+}
+
+// TestTmuxPaneSubsystem_NilPaneIsHarmless ensures the subsystem degrades
+// cleanly when run.go couldn't create the pane (tmux.Setup failed). The
+// subsystem just blocks on ctx until shutdown.
+func TestTmuxPaneSubsystem_NilPaneIsHarmless(t *testing.T) {
+	ts := &tmuxPaneSubsystem{pane: nil}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ts.Run(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run with nil pane: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after cancel with nil pane")
 	}
 }

@@ -133,14 +133,17 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 
 	if inTmux && !cfg.NewSession {
 		if cfg.NewWindow {
-			// Create a new window and split it.
+			// Create a new window and split it. -d on the new-window means
+			// "don't make it active"; tmux split-window -d below keeps focus
+			// on the agent pane so the user's keystrokes drive claude, not
+			// the watch pane.
 			out, err := r.Run("tmux", "new-window", "-P", "-F", "#{pane_id}")
 			if err != nil {
 				return nil, fmt.Errorf("tmux new-window: %w", err)
 			}
 			mainPaneID := strings.TrimSpace(out)
 
-			out, err = r.Run("tmux", "split-window", "-v",
+			out, err = r.Run("tmux", "split-window", "-v", "-d",
 				"-l", strconv.Itoa(idleLines),
 				"-t", mainPaneID,
 				"-P", "-F", "#{pane_id}",
@@ -150,8 +153,10 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 			}
 			paneID = strings.TrimSpace(out)
 		} else {
-			// Split current window horizontally (bottom pane).
-			out, err := r.Run("tmux", "split-window", "-v",
+			// Split current window horizontally (bottom pane). -d keeps the
+			// agent pane focused (without it, tmux would focus the watch
+			// pane and user keystrokes would not reach claude).
+			out, err := r.Run("tmux", "split-window", "-v", "-d",
 				"-l", strconv.Itoa(idleLines),
 				"-P", "-F", "#{pane_id}",
 				paneCmd)

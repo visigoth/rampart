@@ -89,17 +89,26 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 		fatal = append(fatal, engineSub)
 	}
 
-	// FT10 / TR117: tmux UI pane. Recoverable — tmux missing or split-window
-	// failure logs and degrades to interactive-direct, never ends the session.
+	// FT10 / TR117: tmux UI pane. Created SYNCHRONOUSLY here, before
+	// supervisor.Run starts the child, so:
+	//   - the agent pane's pty geometry is final at child startup — no
+	//     mid-startup SIGWINCH that can break the agent's initial TUI
+	//     render (claude/ink/Bun were susceptible to this)
+	//   - tmux split-window -d keeps focus on the agent pane so the user's
+	//     keystrokes drive the agent, not the watch pane
+	// Failures are recoverable: log and degrade to interactive-direct.
 	var recoverable []supervisor.Subsystem
 	if DetectMode(flags) == ModeInteractiveTmux {
-		recoverable = append(recoverable, &tmuxPaneSubsystem{
-			cfg: tmux.PaneConfig{
-				PaneCommand: "rampart escalations --watch",
-				NewSession:  flags.newSession,
-				NewWindow:   flags.newWindow,
-			},
+		pane, err := tmux.Setup(tmux.PaneConfig{
+			PaneCommand: "rampart escalations --watch",
+			NewSession:  flags.newSession,
+			NewWindow:   flags.newWindow,
 		})
+		if err != nil {
+			fmt.Fprintf(stderr, "rampart: tmux pane setup failed (continuing without escalation pane): %v\n", err)
+		} else {
+			recoverable = append(recoverable, &tmuxPaneSubsystem{pane: pane})
+		}
 	}
 
 	cfg := supervisor.Config{
