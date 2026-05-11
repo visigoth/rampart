@@ -57,4 +57,13 @@ exec = [
   # macOS Keychain CLI — claude-code spawns this to read/write the
   # stored API token. Absent on Linux; rule is inert there.
   "/usr/bin/security",
+  # User-installed hooks. Claude's SessionStart/UserPromptSubmit/Stop
+  # hooks all spawn scripts from these trees (peon-ping/peon.sh,
+  # plugin run-hook.cmd, custom user hooks). Without exec here, every
+  # session prints a noisy "Failed with non-blocking status code" for
+  # each hook. Tradeoff: this is a user-writable area, so anything that
+  # lands here can be executed — the agent must already trust whatever
+  # is installed in ~/.claude.
+  "~/.claude/hooks",
+  "~/.claude/plugins",
 ]
