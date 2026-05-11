@@ -70,6 +70,18 @@ See 'rampart help <subcommand>' for more information.
 			return runDryRun(flags, cmd.OutOrStdout())
 		}
 
+		// Route rampart's diagnostic logging away from the controlling
+		// TTY when an interactive agent is about to own it; otherwise
+		// the agent's TUI gets clobbered by proxy CONNECT and session-
+		// socket INFO lines. The log file path is reported on stderr
+		// once, before the agent takes over the terminal.
+		logPath, cleanupLog := configureSlog(flags)
+		defer cleanupLog()
+		go pruneOldLogs()
+		if logPath != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "rampart: logging to %s (pass -v to mirror to stderr)\n", logPath)
+		}
+
 		// Full orchestration: load + compile policy, build a sandbox-wrapped
 		// child Cmd, and hand off to the supervisor lifecycle (TR38–TR58).
 		// .1.2 implemented supervisor.Run; this is the wiring ().
