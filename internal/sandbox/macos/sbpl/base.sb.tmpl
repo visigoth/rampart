@@ -122,15 +122,18 @@
 {{- if eq .NetworkMode "full"}}
 (allow network*)
 {{- else if eq .NetworkMode "filtered"}}
-;; Loopback. The rampart forward proxy binds 127.0.0.1:<random-port> and
-;; injects HTTP_PROXY/HTTPS_PROXY into the agent's env — every HTTPS
-;; request the agent makes goes through this. Without a loopback rule
-;; the proxy connect hits a sandbox deny, the TCP handshake hangs, and
-;; the agent's event loop blocks indefinitely (this manifested as
+;; Loopback. The rampart forward proxy binds on 127.0.0.1:<random-port>
+;; and injects HTTP_PROXY/HTTPS_PROXY into the agent's env — every
+;; HTTPS request the agent makes goes through this. Without a loopback
+;; rule the proxy connect hits a sandbox deny, the TCP handshake hangs,
+;; and the agent's event loop blocks indefinitely (this manifested as
 ;; "claude is running but doesn't respond to keystrokes"). Local dev
 ;; servers and language servers also live here.
-(allow network-outbound (remote tcp "127.0.0.1:*"))
-(allow network-outbound (remote tcp "[::1]:*"))
+;;
+;; Seatbelt's `remote tcp` syntax only accepts `*` or `localhost` for the
+;; host portion (numeric IPs error out at policy load time); the
+;; `localhost` keyword matches both 127.0.0.1 and ::1 at the kernel.
+(allow network-outbound (remote tcp "localhost:*"))
 {{- range .AllowedDomains}}
 (allow network-outbound
     (remote tcp "{{. | sbplEscape}}:*")

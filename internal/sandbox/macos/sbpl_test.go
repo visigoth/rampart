@@ -150,17 +150,17 @@ func TestCompileSBPL_AllowsLoopbackInFilteredMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileSBPL: %v", err)
 	}
-	if !strings.Contains(sbpl, `(remote tcp "127.0.0.1:*")`) {
-		t.Error("filtered-mode SBPL must allow loopback (127.0.0.1) outbound for the proxy")
-	}
-	if !strings.Contains(sbpl, `(remote tcp "[::1]:*")`) {
-		t.Error("filtered-mode SBPL should also allow IPv6 loopback ([::1])")
+	// Seatbelt's `remote tcp` syntax only accepts `*` or `localhost` as the
+	// host portion — numeric IPs (127.0.0.1, [::1]) error at policy load.
+	// The `localhost` keyword matches both IPv4 and IPv6 loopback.
+	if !strings.Contains(sbpl, `(remote tcp "localhost:*")`) {
+		t.Error("filtered-mode SBPL must allow loopback outbound for the proxy (remote tcp \"localhost:*\")")
 	}
 
 	// In none mode, the loopback rule should not appear (network is denied).
 	rpNone := &policy.ResolvedPolicy{NetworkMode: "none"}
 	sbplNone, _ := CompileSBPL(rpNone, false)
-	if strings.Contains(sbplNone, `(remote tcp "127.0.0.1:*")`) {
+	if strings.Contains(sbplNone, `(remote tcp "localhost:*")`) {
 		t.Error("none-mode SBPL must NOT include the loopback allow rule")
 	}
 }
