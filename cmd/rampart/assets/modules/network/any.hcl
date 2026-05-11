@@ -5,9 +5,12 @@
 # a "full" opt-out. The proxy still runs and logs every request; it just
 # doesn't reject any of them. To skip the proxy entirely on darwin, see
 # the network_mode resolution in policy.org.
+#
+# Uses "**" (matches zero-or-more DNS labels) rather than "*" (single
+# label) so multi-label hosts like mcp-proxy.anthropic.com match.
 
 network {
-  domain "*" {
+  domain "**" {
     allow "GET" {
       paths = ["/**"]
     }

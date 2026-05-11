@@ -18,11 +18,27 @@ variable "claude_dir" {
   description = "Claude Code's config + sessions + credentials dir."
 }
 
-# ~/.claude tree: settings, sessions, .credentials.json, projects/,
-# todos/, file-history/, hooks/, plugins/, skills/, etc. Write implies
-# read at the capability level (FR1.12), so this also covers reads.
+variable "claude_cache_dir" {
+  type        = string
+  default     = "~/Library/Caches/claude-cli-nodejs"
+  description = "Claude Code's per-project NodeJS cache + MCP logs dir (macOS)."
+}
+
+# Claude reads + writes several locations:
+#   - ${var.claude_dir}: settings, sessions, .credentials.json, projects/,
+#     todos/, file-history/, hooks/, plugins/, skills/, etc.
+#   - ~/.claude.json: top-level config file (sibling of ~/.claude/, NOT
+#     inside it). Claude updates this on nearly every startup; without
+#     write access it spins in a lock-retry loop and never renders.
+#   - ~/.claude.json.lock / ~/.claude.json.tmp.*: atomic-rename machinery
+#     for the file above (lock file + temp file with PID suffix). The
+#     glob covers the rotating .tmp.<pid>.<ts> names.
+#   - ${var.claude_cache_dir}: NodeJS + MCP log spool.
 write = [
   "${var.claude_dir}",
+  "~/.claude.json",
+  "~/.claude.json.lock",
+  "${var.claude_cache_dir}",
 ]
 
 exec = [
