@@ -19,9 +19,19 @@ read = [
 ]
 
 exec = [
+  # macOS system git.
   "/usr/bin/git",
-  "/usr/local/bin/git",
   "/usr/libexec/git-core",
+  # Homebrew installs. The Caskroom-style subpath catches versioned dirs
+  # so PATH lookup of /opt/homebrew/bin/git (a symlink into Cellar) works.
+  "/opt/homebrew/bin/git",
+  "/opt/homebrew/Cellar/git",
+  "/opt/homebrew/libexec/git-core",
+  # Linux distro + Linuxbrew + manual installs.
+  "/usr/local/bin/git",
+  "/usr/local/libexec/git-core",
+  "/home/linuxbrew/.linuxbrew/bin/git",
+  "/home/linuxbrew/.linuxbrew/Cellar/git",
 ]
 
 write = [

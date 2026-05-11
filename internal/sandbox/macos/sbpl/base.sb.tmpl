@@ -57,6 +57,18 @@
     (subpath "/private/var/db/timezone")
     (subpath "/System/Volumes/Preboot/Cryptexes"))
 
+;; Homebrew prefixes. macOS dyld needs to open shared libraries any
+;; allowlisted Homebrew binary links against — typically under
+;; /opt/homebrew/opt/<formula>/lib (Apple Silicon) or /usr/local/opt
+;; (Intel Homebrew). Without read access here every Homebrew binary
+;; (including claude, tig, gh, etc.) fails to start with
+;;   dyld: "file system sandbox blocked open()"
+;; even when its exec path is explicitly allowed. process-exec is still
+;; gated by per-binary rules from the policy; this is read-only.
+(allow file-read*
+    (subpath "/opt/homebrew")
+    (subpath "/usr/local"))
+
 ;; Proc/dev/etc reads.
 (allow file-read*
     (literal "/")
@@ -110,6 +122,15 @@
 {{- if eq .NetworkMode "full"}}
 (allow network*)
 {{- else if eq .NetworkMode "filtered"}}
+;; Loopback. The rampart forward proxy binds 127.0.0.1:<random-port> and
+;; injects HTTP_PROXY/HTTPS_PROXY into the agent's env — every HTTPS
+;; request the agent makes goes through this. Without a loopback rule
+;; the proxy connect hits a sandbox deny, the TCP handshake hangs, and
+;; the agent's event loop blocks indefinitely (this manifested as
+;; "claude is running but doesn't respond to keystrokes"). Local dev
+;; servers and language servers also live here.
+(allow network-outbound (remote tcp "127.0.0.1:*"))
+(allow network-outbound (remote tcp "[::1]:*"))
 {{- range .AllowedDomains}}
 (allow network-outbound
     (remote tcp "{{. | sbplEscape}}:*")

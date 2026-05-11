@@ -138,6 +138,54 @@ func TestCompileSBPL_AllowsTTYIoctlAndWrite(t *testing.T) {
 	}
 }
 
+// TestCompileSBPL_AllowsLoopbackInFilteredMode covers another load-bearing
+// baseline: the rampart forward proxy binds 127.0.0.1 and the agent
+// connects there for every HTTPS request. Without a loopback rule, the
+// agent's proxy connection silently hangs and its event loop blocks
+// indefinitely. Full mode is covered by (allow network*); none mode is
+// intentionally network-denied so loopback should not appear there.
+func TestCompileSBPL_AllowsLoopbackInFilteredMode(t *testing.T) {
+	rp := &policy.ResolvedPolicy{NetworkMode: "filtered"}
+	sbpl, err := CompileSBPL(rp, false)
+	if err != nil {
+		t.Fatalf("CompileSBPL: %v", err)
+	}
+	if !strings.Contains(sbpl, `(remote tcp "127.0.0.1:*")`) {
+		t.Error("filtered-mode SBPL must allow loopback (127.0.0.1) outbound for the proxy")
+	}
+	if !strings.Contains(sbpl, `(remote tcp "[::1]:*")`) {
+		t.Error("filtered-mode SBPL should also allow IPv6 loopback ([::1])")
+	}
+
+	// In none mode, the loopback rule should not appear (network is denied).
+	rpNone := &policy.ResolvedPolicy{NetworkMode: "none"}
+	sbplNone, _ := CompileSBPL(rpNone, false)
+	if strings.Contains(sbplNone, `(remote tcp "127.0.0.1:*")`) {
+		t.Error("none-mode SBPL must NOT include the loopback allow rule")
+	}
+}
+
+// TestCompileSBPL_AllowsHomebrewPrefixReads covers another load-bearing baseline
+// for any agent that's a Homebrew binary: dyld must be able to open the
+// shared libraries the binary links against, which on macOS Homebrew
+// install live under /opt/homebrew/opt/<formula>/lib (or /usr/local/opt
+// on Intel). Without read access here, claude/tig/gh and friends fail
+// at startup with: dyld "file system sandbox blocked open()" — even
+// when their exec path is allowed.
+func TestCompileSBPL_AllowsHomebrewPrefixReads(t *testing.T) {
+	rp := &policy.ResolvedPolicy{}
+	sbpl, err := CompileSBPL(rp, false)
+	if err != nil {
+		t.Fatalf("CompileSBPL: %v", err)
+	}
+	if !strings.Contains(sbpl, `(subpath "/opt/homebrew")`) {
+		t.Error("baseline SBPL must include (subpath \"/opt/homebrew\") read access for Apple Silicon Homebrew dyld")
+	}
+	if !strings.Contains(sbpl, `(subpath "/usr/local")`) {
+		t.Error("baseline SBPL must include (subpath \"/usr/local\") read access for Intel Homebrew dyld")
+	}
+}
+
 // TestCompileSBPL_AllowsProcessFork covers a load-bearing baseline: with
 // (deny default), Seatbelt requires (allow process-fork) for posix_spawn
 // to succeed at all. Without it, agents inside the sandbox can't spawn
