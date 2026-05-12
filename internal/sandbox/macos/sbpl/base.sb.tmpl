@@ -57,6 +57,20 @@
     (subpath "/private/var/db/timezone")
     (subpath "/System/Volumes/Preboot/Cryptexes"))
 
+;; Xcode / Command Line Tools. The system shims at /usr/bin (python3,
+;; git, clang, swift, ...) are wrappers that call `xcrun`; xcrun in
+;; turn dlopen()s libxcrun.dylib from the active developer dir, which
+;; is either /Applications/Xcode.app/Contents/Developer or
+;; /Library/Developer/CommandLineTools. Without read access here,
+;; running e.g. `python3 -c '...'` fails with:
+;;   xcrun: error: unable to load libxcrun
+;;          (file system sandbox blocked open())
+;; Both paths are listed so the rule covers full-Xcode users and
+;; CLT-only users alike; the missing one is silently ignored.
+(allow file-read*
+    (subpath "/Applications/Xcode.app")
+    (subpath "/Library/Developer"))
+
 ;; Homebrew prefixes. macOS dyld needs to open shared libraries any
 ;; allowlisted Homebrew binary links against — typically under
 ;; /opt/homebrew/opt/<formula>/lib (Apple Silicon) or /usr/local/opt

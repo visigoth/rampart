@@ -214,24 +214,53 @@ func PolicySuggestion(ev ViolationEvent) string {
 }
 
 // Patterns for parsing Apple Sandbox log lines.
-// Typical line: "... deny(1) file-read-data /etc/ssh/sshd_config"
+//   Default form:   "Sandbox: <procname>(<pid>) deny(1) <op> <path>"
+//   Compact form:   "Sandbox: <pid> deny <op> <path>"
+//
+// The kernel emits sandbox denies under sender=Sandbox with processID=0
+// (the kernel itself), not the violator's PID, so we must parse the
+// violator PID out of the message text to filter correctly.
 var (
+	// New form (kernel emits today): "Sandbox: <procname>(<pid>) deny(N) <op> <path>"
+	sandboxLogPatternWithPID = regexp.MustCompile(
+		`Sandbox:\s+\S+\((\d+)\)\s+deny\(\d+\)\s+([\w\-\*]+)\s+(/[^\s]+)`)
+	// Compact PID form: "Sandbox: <pid> deny <op> <path>"
+	sandboxCompactPatternWithPID = regexp.MustCompile(
+		`Sandbox:\s+(\d+)\s+deny\s+([\w\-\*]+)\s+(/[^\s]+)`)
+	// Legacy form (no PID prefix): "deny(N) <op> <path>". Still used by
+	// unit tests; PID extraction returns 0 and the caller must rely on
+	// other sources to identify the violator.
 	sandboxLogPattern = regexp.MustCompile(
 		`deny\(\d+\)\s+([\w\-\*]+)\s+(/[^\s]+)`)
-	// Alternative compact form: "Sandbox: PID deny file-read /etc/passwd"
-	sandboxCompactPattern = regexp.MustCompile(
-		`Sandbox:\s+\d+\s+deny\s+([\w\-\*]+)\s+(/[^\s]+)`)
 )
 
 // parseSandboxLogLine extracts (operation, path, ok) from a sandbox log line.
+// The 3-return signature is preserved for callers that don't care about PID.
 func parseSandboxLogLine(line string) (op, path string, ok bool) {
+	_, op, path, ok = parseSandboxLogLineFull(line)
+	return op, path, ok
+}
+
+// parseSandboxLogLineFull extracts (pid, operation, path, ok) — pid is the
+// violator process ID extracted from the line text (zero if not present).
+// New callers should prefer this so they can filter against the actual
+// violator instead of the log entry's processID (which is the kernel's
+// PID 0 for sandbox-default denies).
+func parseSandboxLogLineFull(line string) (pid int, op, path string, ok bool) {
+	if m := sandboxLogPatternWithPID.FindStringSubmatch(line); m != nil {
+		pid, _ = strconv.Atoi(m[1])
+		return pid, normalizeSandboxOp(m[2]), m[3], true
+	}
+	if m := sandboxCompactPatternWithPID.FindStringSubmatch(line); m != nil {
+		pid, _ = strconv.Atoi(m[1])
+		return pid, normalizeSandboxOp(m[2]), m[3], true
+	}
 	if m := sandboxLogPattern.FindStringSubmatch(line); m != nil {
-		return normalizeSandboxOp(m[1]), m[2], true
+		// Legacy form with no PID in the line — caller falls back to
+		// other PID sources (e.g. log entry processID or pgid).
+		return 0, normalizeSandboxOp(m[1]), m[2], true
 	}
-	if m := sandboxCompactPattern.FindStringSubmatch(line); m != nil {
-		return normalizeSandboxOp(m[1]), m[2], true
-	}
-	return "", "", false
+	return 0, "", "", false
 }
 
 // normalizeSandboxOp maps raw SBPL operation names to our canonical form.

@@ -117,10 +117,31 @@ func (v *ViolationKiller) Run(ctx context.Context) error {
 	}
 }
 
-// handle dispatches a single violation event.
+// handle dispatches a single violation event. Defense in depth: the
+// streamer already filters by process group, but we re-check here
+// in case events arrive from a fanout source (tests, alternative
+// streamers). Accept the event when ev.PID matches v.cfg.PID OR
+// shares its process group — the latter catches descendants like
+// `claude → bash → python3 → xcrun` where the deny lands on
+// python3's PID. If pgid lookup fails (already-dead PID, or
+// platform race) we fall back to exact-PID match, preserving the
+// old defensive behaviour for stray events.
 func (v *ViolationKiller) handle(ctx context.Context, ev ViolationEvent, log *slog.Logger) {
 	if uint32(v.cfg.PID) != 0 && ev.PID != 0 && uint32(v.cfg.PID) != ev.PID {
-		return // event for a different process
+		// pgid lookups can fail with ESRCH for short-lived violators
+		// that have already exited by the time we process the event.
+		// Treat lookup failure as "unknown, don't reject" — the
+		// streamer already narrows to sandbox-relevant events, so
+		// admitting an event we can't disprove is the safer fallback.
+		// Only confirmed pgid mismatch drops.
+		ownPgid, errOwn := syscall.Getpgid(v.cfg.PID)
+		if errOwn != nil {
+			return // can't establish our pgid → strict PID match path
+		}
+		evPgid, errEv := syscall.Getpgid(int(ev.PID))
+		if errEv == nil && ownPgid != evPgid {
+			return // confirmed unrelated process tree
+		}
 	}
 
 	var decision Decision = Deny // default-deny when engine absent

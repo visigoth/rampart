@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // LogStreamer is a live source of sandbox-violation events for a child PID.
@@ -72,11 +73,23 @@ type streamRecord struct {
 // Stream implements LogStreamer.
 func (s *realLogStreamer) Stream(ctx context.Context, pid int) (<-chan ViolationEvent, error) {
 	base := s.cmd()
+	// The predicate must match BOTH paths the kernel takes for sandbox
+	// denies:
+	//   - subsystem == "com.apple.sandbox.reporting" — sandboxd-emitted
+	//     entries (some macOS releases route certain denies through the
+	//     sandbox daemon for telemetry).
+	//   - eventMessage starting with "Sandbox: " — kernel-direct denies,
+	//     where the log entry has processID == 0 (kernel) and an empty
+	//     subsystem field but the eventMessage text contains both the
+	//     violator's process name + PID and the operation + path. Modern
+	//     macOS (Sequoia and later) emits most `deny default` events
+	//     via this path.
 	args := []string{
 		"stream",
 		"--style", "ndjson",
 		"--info",
-		"--predicate", `subsystem == "com.apple.sandbox.reporting"`,
+		"--predicate",
+		`subsystem == "com.apple.sandbox.reporting" OR eventMessage BEGINSWITH "Sandbox: "`,
 	}
 	full := append([]string(nil), base[1:]...)
 	full = append(full, args...)
@@ -95,15 +108,30 @@ func (s *realLogStreamer) Stream(ctx context.Context, pid int) (<-chan Violation
 		return nil, fmt.Errorf("log-stream start: %w", err)
 	}
 
+	// Look up the process group of the sandboxed child once at start. The
+	// child and every descendant it spawns share this pgrp (Go's exec.Cmd
+	// default inherits parent's pgid; the kernel preserves pgid across
+	// fork/exec). Filtering on pgid instead of an exact PID match lets us
+	// pick up sandbox denies from descendants — e.g. claude → bash →
+	// python3 → xcrun, where the deny is emitted against python3's PID.
+	// If the lookup fails (already-dead child / racy ctx cancel / test
+	// fixture with synthetic PID) we record pgid=0 and the filter below
+	// falls back to strict exact-PID matching. Note: macOS Getpgid
+	// returns (-1, ESRCH) on miss, not (0, err) — must zero on error.
+	pgid := 0
+	if g, err := syscall.Getpgid(pid); err == nil {
+		pgid = g
+	}
+
 	out := make(chan ViolationEvent, 16)
-	go s.scanLoop(ctx, cmd, stdout, pid, out)
+	go s.scanLoop(ctx, cmd, stdout, pid, pgid, out)
 	return out, nil
 }
 
 // scanLoop reads ndjson from stdout, decodes streamRecord values, filters
 // by pid, parses event messages, and forwards ViolationEvents. It closes
 // `out` and reaps the subprocess on exit.
-func (s *realLogStreamer) scanLoop(ctx context.Context, cmd *exec.Cmd, stdout io.ReadCloser, pid int, out chan<- ViolationEvent) {
+func (s *realLogStreamer) scanLoop(ctx context.Context, cmd *exec.Cmd, stdout io.ReadCloser, pid, pgid int, out chan<- ViolationEvent) {
 	log := s.logger()
 
 	defer func() {
@@ -127,21 +155,58 @@ func (s *realLogStreamer) scanLoop(ctx context.Context, cmd *exec.Cmd, stdout io
 			// Malformed line — skip but keep streaming.
 			continue
 		}
-		if rec.ProcessID != pid {
-			continue
-		}
-		if rec.Subsystem != "" && rec.Subsystem != "com.apple.sandbox.reporting" {
-			continue
-		}
 		if rec.EventMessage == "" {
 			continue
 		}
-		op, path, ok := parseSandboxLogLine(rec.EventMessage)
+		// Parse the violator PID + op + path out of the message text.
+		// We can't trust rec.ProcessID — kernel-direct sandbox denies
+		// (which is most of them on modern macOS) come tagged with
+		// processID = 0 (kernel), and only the eventMessage carries
+		// the real violator PID like "Sandbox: cat(34104) deny(1) ...".
+		violatorPID, op, path, ok := parseSandboxLogLineFull(rec.EventMessage)
 		if !ok {
 			continue
 		}
+		// Filter: accept events from the sandboxed child or any
+		// process in its process group. Descendants like
+		// claude → bash → python3 → xcrun share pgid via the
+		// kernel's fork-preserves-pgid rule.
+		//
+		// IMPORTANT race-handling: by the time we see a deny log
+		// entry for a short-lived process (e.g. `cat`), the process
+		// has typically already exited. syscall.Getpgid then returns
+		// ESRCH. We must NOT treat ESRCH as "wrong process tree" —
+		// that would silently drop every deny from a fast-exiting
+		// command. Lookup failure → accept (the streamer's macOS
+		// log predicate is already scoped to sandbox events, so the
+		// false-positive surface is small).
+		eventPID := violatorPID
+		if eventPID == 0 {
+			eventPID = rec.ProcessID
+		}
+		if eventPID != pid {
+			if pgid == 0 {
+				// We never established our supervised pgid (lookup
+				// at startup failed — typical in tests with synthetic
+				// PIDs). Fall back to strict exact-PID filtering so
+				// stray events for unrelated processes don't leak.
+				continue
+			}
+			// We DO know our pgid. Look up the violator's; if the
+			// lookup succeeds and matches, accept (descendant). If
+			// the lookup fails (ESRCH — short-lived violator that
+			// already exited, which is the common case for things
+			// like `cat /etc/foo` denied by Seatbelt) we accept too,
+			// since we can't prove the event is unrelated and the
+			// streamer's predicate has already narrowed to sandbox
+			// events. Only confirmed mismatch drops.
+			rpgid, err := syscall.Getpgid(eventPID)
+			if err == nil && rpgid != pgid {
+				continue
+			}
+		}
 		ev := ViolationEvent{
-			PID:      uint32(pid),
+			PID:      uint32(eventPID),
 			Syscall:  op,
 			Path:     path,
 			Required: capFromOperation(op),
