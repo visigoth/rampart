@@ -37,6 +37,15 @@ type ProfileConfig struct {
 	Exec           []string        `hcl:"exec,optional"`
 	AllowedDomains []string        `hcl:"allowed_domains,optional"`
 	MitmDomains    []string        `hcl:"mitm_domains,optional"`
+	// UnixSockets lists local Unix-domain socket paths the agent is
+	// allowed to connect() to. Required for ssh-agent, gpg-agent,
+	// 1Password's op-ssh-autopen agent, Docker socket, etc. — anything
+	// that talks over a local AF_UNIX socket. Seatbelt treats Unix
+	// socket connect() as a `network-outbound` operation distinct from
+	// TCP/UDP, so file-read+write grants alone aren't sufficient;
+	// each socket needs its own `(allow network-outbound (literal X))`
+	// rule emitted by the sandbox compiler.
+	UnixSockets    []string        `hcl:"unix_sockets,optional"`
 	// NoTLSMITM disables TLS interception (man-in-the-middle) for this profile.
 	// HTTPS still flows through the proxy with domain-level allow/deny at
 	// CONNECT time, but path rules are not enforced for HTTPS (HTTP is

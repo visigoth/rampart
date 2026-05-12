@@ -26,6 +26,14 @@ type ResolvedPolicy struct {
 	AllowedDomains []string // From profile
 	ProxyACLs      []config.DomainConfig // From profile network block
 	MitmDomains    []string              // From profile (cleared when NoTLSMITM is true)
+	// UnixSockets is the set of local Unix-domain socket paths the
+	// agent may connect() to. ssh-agent, gpg-agent, 1Password's
+	// op-ssh-autopen agent, Docker's daemon socket, etc. Seatbelt
+	// treats connect() to an AF_UNIX socket as a network-outbound
+	// operation distinct from TCP/UDP, so each socket needs an
+	// explicit (allow network-outbound (literal X)) emit even when
+	// file-read+write on the socket inode is granted.
+	UnixSockets    []string              // From profile
 
 	// NoTLSMITM disables TLS interception. HTTPS gets domain-only filtering
 	// at CONNECT time; path rules and mitm_domains are ignored on HTTPS.

@@ -140,3 +140,14 @@
     (remote udp "{{. | sbplEscape}}:*"))
 {{- end}}
 {{- end}}
+
+;; ---- Unix-domain sockets ----
+;; Seatbelt classifies connect(2) on an AF_UNIX socket as a
+;; network-outbound operation, distinct from file-read/file-write on
+;; the socket inode. Modules that need to talk to a local agent
+;; daemon (ssh-agent, 1Password's op-ssh-autopen, gpg-agent, Docker)
+;; declare the socket via `unix_sockets = [ "..." ]`; we emit one
+;; (literal X) per path so the kernel admits the connect.
+{{- range .UnixSockets}}
+(allow network-outbound (literal "{{. | sbplEscape}}"))
+{{- end}}

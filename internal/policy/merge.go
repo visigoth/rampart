@@ -65,6 +65,7 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 		rp.ProxyACLs = profile.Network.Domains
 	}
 	rp.AllowedDomains = append([]string(nil), profile.AllowedDomains...)
+	rp.UnixSockets = append([]string(nil), profile.UnixSockets...)
 
 	// --- Toolchains: intersection ---
 	rp.Toolchains = intersectStrings(agent.Toolchains, profile.Toolchains)

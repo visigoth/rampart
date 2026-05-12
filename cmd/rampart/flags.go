@@ -138,9 +138,17 @@ func isTTY(f *os.File) bool {
 
 // builtinEnvVars is the minimal env set always passed to the sandboxed process
 // regardless of --no-env (TR41). LC_* is handled by prefix match.
+//
+// SSH_AUTH_SOCK is included because ssh-agent integration is a
+// pervasive expectation — every ssh-using profile (1Password agent,
+// gpg-agent, system ssh-agent) sets it in the user's shell and expects
+// ssh to pick it up. Sandbox enforcement of the agent socket file
+// itself is at the filesystem layer (tooling/op-ssh grants
+// read+write); leaking just the path string is harmless.
 var builtinEnvVars = []string{
 	"PATH", "HOME", "USER", "TERM", "LANG", "SHELL", "TMPDIR",
 	"XDG_RUNTIME_DIR", "XDG_CACHE_HOME",
+	"SSH_AUTH_SOCK",
 }
 
 // BuildEnv builds the environment variable list for the sandboxed process

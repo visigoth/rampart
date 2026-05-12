@@ -92,6 +92,7 @@ type ModuleFragment struct {
 	Exec           []string
 	AllowedDomains []string
 	MitmDomains    []string
+	UnixSockets    []string
 	Toolchains     []string
 	NetworkDomains []DomainConfig
 }
@@ -528,6 +529,7 @@ func mergeFragmentBody(mf *ModuleFile, ctx *hcl.EvalContext, frag *ModuleFragmen
 		Exec           []string       `hcl:"exec,optional"`
 		AllowedDomains []string       `hcl:"allowed_domains,optional"`
 		MitmDomains    []string       `hcl:"mitm_domains,optional"`
+		UnixSockets    []string       `hcl:"unix_sockets,optional"`
 		Toolchains     []string       `hcl:"toolchains,optional"`
 		Network        *NetworkConfig `hcl:"network,block"`
 	}
@@ -564,6 +566,7 @@ func mergeFragmentBody(mf *ModuleFile, ctx *hcl.EvalContext, frag *ModuleFragmen
 	frag.Exec = append(frag.Exec, fd.Exec...)
 	frag.AllowedDomains = append(frag.AllowedDomains, fd.AllowedDomains...)
 	frag.MitmDomains = append(frag.MitmDomains, fd.MitmDomains...)
+	frag.UnixSockets = append(frag.UnixSockets, fd.UnixSockets...)
 	frag.Toolchains = append(frag.Toolchains, fd.Toolchains...)
 	if fd.Network != nil {
 		frag.NetworkDomains = append(frag.NetworkDomains, fd.Network.Domains...)
@@ -581,6 +584,7 @@ func MergeFragmentIntoProfile(p *ProfileConfig, frag *ModuleFragment) {
 	p.Exec = dedupAppend(p.Exec, frag.Exec)
 	p.AllowedDomains = dedupAppend(p.AllowedDomains, frag.AllowedDomains)
 	p.MitmDomains = dedupAppend(p.MitmDomains, frag.MitmDomains)
+	p.UnixSockets = dedupAppend(p.UnixSockets, frag.UnixSockets)
 	p.Toolchains = dedupAppend(p.Toolchains, frag.Toolchains)
 	if len(frag.NetworkDomains) > 0 {
 		if p.Network == nil {

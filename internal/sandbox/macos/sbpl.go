@@ -22,6 +22,7 @@ type sbplData struct {
 	// Network policy.
 	NetworkMode    string
 	AllowedDomains []string
+	UnixSockets    []string
 
 	// TestMode suppresses hard SIGKILL denial rules (FT17).
 	TestMode bool
@@ -67,6 +68,7 @@ func CompileSBPL(rp *policy.ResolvedPolicy, testMode bool) (string, error) {
 		ExecPaths:      rp.Exec,
 		NetworkMode:    rp.NetworkMode,
 		AllowedDomains: rp.AllowedDomains,
+		UnixSockets:    rp.UnixSockets,
 		TestMode:       testMode,
 	}
 

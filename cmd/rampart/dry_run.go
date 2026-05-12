@@ -106,6 +106,9 @@ func resolvePolicyPaths(rp *policy.ResolvedPolicy, gitRoot, fallback string) err
 	if rp.CLIExtraPaths, err = paths.ResolveAll(rp.CLIExtraPaths, ctx); err != nil {
 		return fmt.Errorf("cli extra paths: %w", err)
 	}
+	if rp.UnixSockets, err = paths.ResolveAll(rp.UnixSockets, ctx); err != nil {
+		return fmt.Errorf("unix sockets: %w", err)
+	}
 	return nil
 }
 
