@@ -288,18 +288,31 @@ func ResolveModulePath(name, gitRoot, globalDir string) (absPath, source string,
 		name, strings.Join(attempts, ", "))
 }
 
-// ResolveModuleContent looks up a module by name and returns its source
-// bytes plus a human-readable origin string. The origin is also the
-// cycle-detection key.
+// ResolveModuleContent is the single-globalDir convenience wrapper around
+// ResolveModuleContentFromDirs. Prefer the latter for production wiring
+// that needs the full multi-dir search chain (user override + system
+// install).
+func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src []byte, origin string, err error) {
+	dirs := []string(nil)
+	if globalDir != "" {
+		dirs = []string{globalDir}
+	}
+	return ResolveModuleContentFromDirs(name, gitRoot, dirs, bundled)
+}
+
+// ResolveModuleContentFromDirs looks up a module by name and returns its
+// source bytes plus a human-readable origin string. The origin doubles
+// as the cycle-detection key.
 //
-// Search order (least precedence first applied last → wins):
-//  1. <gitRoot>/.rampart/modules/<name>.hcl      (per-repo override)
-//  2. <globalDir>/modules/<name>.hcl             (user-supplied global)
-//  3. "assets/modules/<name>.hcl" in `bundled`   (binary's embedded lib)
+// Search order (first hit wins):
+//  1. <gitRoot>/.rampart/modules/<name>.hcl                (per-repo)
+//  2. globalDirs[i]/modules/<name>.hcl  for each i in order
+//     (typical wiring: user override first, system install second)
+//  3. "assets/modules/<name>.hcl" inside `bundled`         (embed fallback)
 //
 // On disk the origin is the resolved absolute path (with symlinks
 // followed). For bundled hits the origin is "bundled:<rel>".
-func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src []byte, origin string, err error) {
+func ResolveModuleContentFromDirs(name, gitRoot string, globalDirs []string, bundled fs.FS) (src []byte, origin string, err error) {
 	if name == "" {
 		return nil, "", fmt.Errorf("module name must not be empty")
 	}
@@ -311,36 +324,45 @@ func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src [
 		rel += ".hcl"
 	}
 
-	// On-disk attempts first.
-	abs, _, diskErr := ResolveModulePath(name, gitRoot, globalDir)
-	if diskErr == nil {
+	var attempts []string
+	tryDisk := func(path string) ([]byte, string, bool) {
+		attempts = append(attempts, path)
+		if _, statErr := os.Stat(path); statErr != nil {
+			return nil, "", false
+		}
+		abs, evalErr := filepath.EvalSymlinks(path)
+		if evalErr != nil {
+			abs = path
+		}
 		data, readErr := os.ReadFile(abs)
 		if readErr != nil {
-			return nil, "", fmt.Errorf("reading module %s: %w", abs, readErr)
+			return nil, "", false
 		}
-		return data, abs, nil
+		return data, abs, true
 	}
 
-	// Bundled fallback.
+	if gitRoot != "" {
+		if data, abs, ok := tryDisk(filepath.Join(gitRoot, ".rampart", "modules", rel)); ok {
+			return data, abs, nil
+		}
+	}
+	for _, dir := range globalDirs {
+		if dir == "" {
+			continue
+		}
+		if data, abs, ok := tryDisk(filepath.Join(dir, "modules", rel)); ok {
+			return data, abs, nil
+		}
+	}
+
 	if bundled != nil {
 		bundledRel := "assets/modules/" + rel
+		attempts = append(attempts, "bundled:"+bundledRel)
 		if data, readErr := fs.ReadFile(bundled, bundledRel); readErr == nil {
 			return data, "bundled:" + bundledRel, nil
 		}
 	}
 
-	// Report a single composite error so the user sees every search
-	// location that was tried, including the bundled tier when applicable.
-	var attempts []string
-	if gitRoot != "" {
-		attempts = append(attempts, filepath.Join(gitRoot, ".rampart", "modules", rel))
-	}
-	if globalDir != "" {
-		attempts = append(attempts, filepath.Join(globalDir, "modules", rel))
-	}
-	if bundled != nil {
-		attempts = append(attempts, "bundled:assets/modules/"+rel)
-	}
 	return nil, "", fmt.Errorf("module %q not found in any search path: tried %s",
 		name, strings.Join(attempts, ", "))
 }
@@ -358,10 +380,21 @@ func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src [
 // *outermost* use blocks (typically nil for a profile, since profiles
 // don't have variables of their own in v1).
 func ExpandUseBlocks(uses []*UseBlock, gitRoot, globalDir string, bundled fs.FS, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
+	dirs := []string(nil)
+	if globalDir != "" {
+		dirs = []string{globalDir}
+	}
+	return ExpandUseBlocksFromDirs(uses, gitRoot, dirs, bundled, parentCtx)
+}
+
+// ExpandUseBlocksFromDirs is ExpandUseBlocks but takes an ordered list
+// of global search dirs (e.g. user-override dir first, system-install
+// dir second) so multi-tier deployments resolve in the right order.
+func ExpandUseBlocksFromDirs(uses []*UseBlock, gitRoot string, globalDirs []string, bundled fs.FS, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
 	stack := newCycleStack()
 	frag := &ModuleFragment{}
 	for _, u := range uses {
-		if err := expandOne(u, gitRoot, globalDir, bundled, parentCtx, frag, stack); err != nil {
+		if err := expandOne(u, gitRoot, globalDirs, bundled, parentCtx, frag, stack); err != nil {
 			return nil, err
 		}
 	}
@@ -373,8 +406,8 @@ func ExpandUseBlocks(uses []*UseBlock, gitRoot, globalDir string, bundled fs.FS,
 // builds a child EvalContext from the resolved variable values, decodes
 // the module's fragment body in that context, and then recurses into the
 // module's own use blocks.
-func expandOne(u *UseBlock, gitRoot, globalDir string, bundled fs.FS, parentCtx *hcl.EvalContext, frag *ModuleFragment, stack *cycleStack) error {
-	src, origin, err := ResolveModuleContent(u.ModulePath, gitRoot, globalDir, bundled)
+func expandOne(u *UseBlock, gitRoot string, globalDirs []string, bundled fs.FS, parentCtx *hcl.EvalContext, frag *ModuleFragment, stack *cycleStack) error {
+	src, origin, err := ResolveModuleContentFromDirs(u.ModulePath, gitRoot, globalDirs, bundled)
 	if err != nil {
 		return fmt.Errorf("%s:%d: use %q: %w",
 			u.DeclRange.Filename, u.DeclRange.Start.Line, u.ModulePath, err)
@@ -418,7 +451,7 @@ func expandOne(u *UseBlock, gitRoot, globalDir string, bundled fs.FS, parentCtx 
 	stack.push(origin)
 	defer stack.pop()
 	for _, child := range mf.Use {
-		if err := expandOne(child, gitRoot, globalDir, bundled, modCtx, frag, stack); err != nil {
+		if err := expandOne(child, gitRoot, globalDirs, bundled, modCtx, frag, stack); err != nil {
 			return err
 		}
 	}

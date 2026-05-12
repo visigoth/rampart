@@ -12,11 +12,18 @@ import (
 // Registry indexes agent and profile configs across global, repo-wide, and
 // project-scoped directories. It implements FR8-FR12 name resolution semantics.
 //
-// Three scopes for name resolution, in precedence order:
-//   1. Per-repo  (<gitRoot>/.rampart/)
-//   2. User-supplied global (<globalDir>/) — rampart never writes here
-//   3. Bundled  (fs.FS rooted at "assets/agents" / "assets/modules") —
-//      the embedded library shipped with the binary
+// Resolution scopes, in precedence order (most-specific wins):
+//   1. Per-repo               <gitRoot>/.rampart/
+//   2. User-supplied global   first entry in globalDirs that exists
+//      (typically ~/.local/share/rampart/) — rampart never writes here;
+//      this is where the user puts custom or override modules
+//   3. System-installed       remaining globalDirs entries, e.g.
+//      /opt/shaheengandhi/share/rampart/ — the canonical install
+//      location for the rampart-shipped library, populated by
+//      `just install rampart`
+//   4. Bundled (fs.FS)        last-resort fallback for `go install`
+//      users who have no on-disk library; pulled directly from the
+//      binary's embedded assets
 type Registry struct {
 	// agents maps qualified names ("project/name" or bare "name") to AgentConfig.
 	// Bare names key on the simple name; qualified names key on "project/name".
@@ -25,49 +32,69 @@ type Registry struct {
 	defaults *DefaultsConfig
 
 	gitRoot    string
-	globalDir  string
+	globalDirs []string
 	rampartDir string
 
-	// bundled is the embedded library (typically a Go embed.FS) holding the
-	// rampart-shipped agents and modules trees. Search keys are the rooted
-	// paths "assets/agents/<name>.hcl" and "assets/modules/<name>.hcl".
-	// Optional — nil disables bundled lookup (useful in unit tests).
+	// bundled is the binary's embedded library, used only when no entry
+	// in globalDirs has the requested module/agent. Tests pass nil.
 	bundled fs.FS
 }
 
-// NewRegistry builds a registry by scanning all configured scopes. Pass:
-//   - gitRoot: path to the git repository root (may be "" if not in a repo)
-//   - globalDir: user-supplied module/agent directory; rampart no longer
-//     auto-populates this — it exists only for content the user has placed
-//     themselves. May be "" to skip.
+// NewRegistry builds a registry with a single user-global directory and no
+// bundled fallback. Most callers should prefer NewRegistryWithBundled,
+// which supports the full search chain.
 func NewRegistry(gitRoot, globalDir string) (*Registry, error) {
-	return NewRegistryWithBundled(gitRoot, globalDir, nil)
+	dirs := []string(nil)
+	if globalDir != "" {
+		dirs = []string{globalDir}
+	}
+	return NewRegistryFromDirs(gitRoot, dirs, nil)
 }
 
 // NewRegistryWithBundled is NewRegistry plus a fallback fs.FS for the
-// rampart-shipped bundled library. The bundled tree is expected to be
-// rooted at "assets/agents/*.hcl" and "assets/modules/**". When the
-// caller doesn't have an embedded fs to pass (e.g., unit tests), use
-// NewRegistry instead.
+// rampart-shipped bundled library. Kept for callers that already pass a
+// single globalDir; the search chain still uses just that one dir.
 func NewRegistryWithBundled(gitRoot, globalDir string, bundled fs.FS) (*Registry, error) {
+	dirs := []string(nil)
+	if globalDir != "" {
+		dirs = []string{globalDir}
+	}
+	return NewRegistryFromDirs(gitRoot, dirs, bundled)
+}
+
+// NewRegistryFromDirs builds a registry against an ordered list of
+// global search directories plus an optional bundled fs.FS fallback.
+// Order in globalDirs is precedence: earlier dirs shadow later ones.
+// Typical production wiring (in priority order):
+//
+//	dirs := []string{
+//	    "~/.local/share/rampart",                    // user overrides
+//	    "/opt/shaheengandhi/share/rampart",          // system install
+//	}
+func NewRegistryFromDirs(gitRoot string, globalDirs []string, bundled fs.FS) (*Registry, error) {
 	r := &Registry{
-		agents:    make(map[string]*AgentConfig),
-		profiles:  make(map[string]*ProfileConfig),
-		gitRoot:   gitRoot,
-		globalDir: globalDir,
-		bundled:   bundled,
+		agents:     make(map[string]*AgentConfig),
+		profiles:   make(map[string]*ProfileConfig),
+		gitRoot:    gitRoot,
+		globalDirs: globalDirs,
+		bundled:    bundled,
 	}
 	if gitRoot != "" {
 		r.rampartDir = filepath.Join(gitRoot, ".rampart")
 	}
 
-	// Order is least-specific to most-specific: bundled agents are loaded
-	// first so user-global and repo-scoped agents can shadow them with the
-	// same bare name; project-scoped wins everything.
-	if err := r.indexBundled(); err != nil {
-		return nil, err
+	// Index in precedence order. registerAgent's "first to claim a bare
+	// name at a given scope wins" rule means earlier indexers shadow
+	// later ones at the same scope, so we walk globalDirs forward
+	// (user override first, system install second), then fall through
+	// to the bundled embed.FS. Repo runs last because scopeRepo
+	// overrides scopeGlobal via the scope-comparison path.
+	for _, dir := range r.globalDirs {
+		if err := r.indexAgentDir(dir, "", scopeGlobal); err != nil {
+			return nil, err
+		}
 	}
-	if err := r.indexGlobal(); err != nil {
+	if err := r.indexBundled(); err != nil {
 		return nil, err
 	}
 	if err := r.indexRepo(); err != nil {
@@ -299,16 +326,12 @@ func (r *Registry) indexBundled() error {
 	return nil
 }
 
-// indexGlobal scans ~/.local/share/rampart/ for agents the user has placed
-// there themselves. Rampart no longer auto-populates this directory; it
-// exists only for content the user manages directly. Bare-name agents
-// here shadow bundled ones; repo + project scopes shadow these in turn.
-func (r *Registry) indexGlobal() error {
-	if r.globalDir == "" {
-		return nil
-	}
-	return r.indexAgentDir(r.globalDir, "", scopeGlobal)
-}
+// indexGlobal is a legacy no-op kept so existing test fixtures and any
+// out-of-tree callers don't break. The actual global-dir indexing is
+// done in NewRegistryFromDirs, which walks globalDirs in reverse-
+// precedence order so the user-override layer wins over the system-
+// install layer.
+func (r *Registry) indexGlobal() error { return nil }
 
 // indexRepo scans <git-root>/.rampart/ for repo-wide agents and profiles.
 func (r *Registry) indexRepo() error {
@@ -505,7 +528,7 @@ func (r *Registry) indexProfileFile(path, project, profileName string, isShortha
 		// The expander concatenates contributions and dedups path lists.
 		// Failure here is reported as a profile load error.
 		if len(p.Use) > 0 {
-			frag, err := ExpandUseBlocks(p.Use, r.gitRoot, r.globalDir, r.bundled, nil)
+			frag, err := ExpandUseBlocksFromDirs(p.Use, r.gitRoot, r.globalDirs, r.bundled, nil)
 			if err != nil {
 				return fmt.Errorf("%s: profile %q: %w", path, p.Name, err)
 			}

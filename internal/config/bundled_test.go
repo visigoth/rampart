@@ -78,6 +78,90 @@ func TestResolveModuleContent_NoBundled_NotFound(t *testing.T) {
 	}
 }
 
+// TestResolveModuleContentFromDirs_PrecedenceOrder verifies the four-tier
+// resolution chain when running under `just install`-style wiring: the
+// per-repo dir beats the user-override dir, which beats the install
+// share dir, which beats the embedded fallback. This is the canonical
+// production setup — getting this wrong is how upgrades go silently
+// stale.
+func TestResolveModuleContentFromDirs_PrecedenceOrder(t *testing.T) {
+	userDir := t.TempDir()
+	installDir := t.TempDir()
+	gitRoot := t.TempDir()
+
+	for _, fixture := range []struct {
+		root, tag string
+	}{
+		{gitRoot, "from-repo"},
+		{userDir, "from-user-override"},
+		{installDir, "from-install-share"},
+	} {
+		dir := filepath.Join(fixture.root, "modules", "tooling")
+		if fixture.root == gitRoot {
+			dir = filepath.Join(fixture.root, ".rampart", "modules", "tooling")
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "demo.hcl"),
+			[]byte("# "+fixture.tag+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	bundled := fstest.MapFS{
+		"assets/modules/tooling/demo.hcl": &fstest.MapFile{
+			Data: []byte("# from-bundled-embed\n"),
+		},
+	}
+
+	// All four sources present → repo wins.
+	src, _, err := config.ResolveModuleContentFromDirs("tooling/demo", gitRoot,
+		[]string{userDir, installDir}, bundled)
+	if err != nil {
+		t.Fatalf("all sources: %v", err)
+	}
+	if !strings.Contains(string(src), "from-repo") {
+		t.Errorf("expected repo to win; got %q", src)
+	}
+
+	// Drop repo → user-override wins.
+	os.RemoveAll(filepath.Join(gitRoot, ".rampart"))
+	src, _, err = config.ResolveModuleContentFromDirs("tooling/demo", gitRoot,
+		[]string{userDir, installDir}, bundled)
+	if err != nil {
+		t.Fatalf("no repo: %v", err)
+	}
+	if !strings.Contains(string(src), "from-user-override") {
+		t.Errorf("expected user override to win; got %q", src)
+	}
+
+	// Drop user-override → install-share-dir wins.
+	os.RemoveAll(filepath.Join(userDir, "modules"))
+	src, _, err = config.ResolveModuleContentFromDirs("tooling/demo", gitRoot,
+		[]string{userDir, installDir}, bundled)
+	if err != nil {
+		t.Fatalf("install-share only: %v", err)
+	}
+	if !strings.Contains(string(src), "from-install-share") {
+		t.Errorf("expected install-share to win; got %q", src)
+	}
+
+	// Drop install-share-dir → bundled embed wins (go-install fallback).
+	os.RemoveAll(filepath.Join(installDir, "modules"))
+	src, origin, err := config.ResolveModuleContentFromDirs("tooling/demo", gitRoot,
+		[]string{userDir, installDir}, bundled)
+	if err != nil {
+		t.Fatalf("bundled only: %v", err)
+	}
+	if !strings.Contains(string(src), "from-bundled-embed") {
+		t.Errorf("expected bundled to win; got %q", src)
+	}
+	if !strings.HasPrefix(origin, "bundled:") {
+		t.Errorf("expected bundled: origin prefix; got %q", origin)
+	}
+}
+
 // TestNewRegistryWithBundled_IndexesBundledAgents verifies that an agent
 // living only in the bundled fs.FS is discovered by the registry (no
 // on-disk extraction required).

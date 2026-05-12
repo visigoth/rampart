@@ -22,9 +22,8 @@ type compiledPolicy struct {
 // resolves the agent and profile from flags, and returns the merged policy.
 func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 	gitRoot := config.FindGitRoot(startDir)
-	globalDir := config.GlobalShareDir()
 
-	reg, err := config.NewRegistryWithBundled(gitRoot, globalDir, bundledLibraryFS())
+	reg, err := config.NewRegistryFromDirs(gitRoot, libraryGlobalDirs(), bundledLibraryFS())
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
