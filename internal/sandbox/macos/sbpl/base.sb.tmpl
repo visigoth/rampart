@@ -142,12 +142,24 @@
 {{- end}}
 
 ;; ---- Unix-domain sockets ----
-;; Seatbelt classifies connect(2) on an AF_UNIX socket as a
-;; network-outbound operation, distinct from file-read/file-write on
-;; the socket inode. Modules that need to talk to a local agent
-;; daemon (ssh-agent, 1Password's op-ssh-autopen, gpg-agent, Docker)
-;; declare the socket via `unix_sockets = [ "..." ]`; we emit one
-;; (literal X) per path so the kernel admits the connect.
+;; Seatbelt classifies AF_UNIX I/O as network operations distinct from
+;; file-read/file-write on the socket inode. Two ops show up for the
+;; agents we care about:
+;;
+;;   connect(2)  → network-outbound  (ssh-agent client, Docker client,
+;;                 op-ssh-autopen client)
+;;   bind(2)     → network-bind      (ssh ControlMaster listener,
+;;                 anything that creates a unix-domain listener)
+;;
+;; Modules declare allowed socket paths or directories via
+;; `unix_sockets = [...]`. Each entry produces BOTH a network-outbound
+;; AND a network-bind allow, and uses (subpath ...) rather than
+;; (literal ...) so a single entry covers:
+;;   - the path itself (works for an exact socket like agent.sock)
+;;   - any file under it (works for a directory like ~/.ssh/cm where
+;;     ssh creates "<user>@<host>:<port>.<random-suffix>" temp sockets
+;;     then atomically renames to the final name)
 {{- range .UnixSockets}}
-(allow network-outbound (literal "{{. | sbplEscape}}"))
+(allow network-outbound (subpath "{{. | sbplEscape}}"))
+(allow network-bind     (subpath "{{. | sbplEscape}}"))
 {{- end}}

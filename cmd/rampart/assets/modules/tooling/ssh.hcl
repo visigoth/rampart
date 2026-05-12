@@ -52,6 +52,16 @@ write = [
   "${var.control_master_dir}",
 ]
 
+# ControlMaster sockets are Unix-domain listeners; Seatbelt
+# distinguishes bind/connect on AF_UNIX from file-write/file-read on
+# the socket inode, so we also need network-bind + network-outbound
+# allow rules on the cm dir. The unix_sockets emit uses (subpath X)
+# so it covers the temp names ssh creates during atomic rename
+# (cm/<user>@<host>:<port>.<random>).
+unix_sockets = [
+  "${var.control_master_dir}",
+]
+
 exec = [
   # System install (macOS + most Linux distros).
   "/usr/bin/ssh",
