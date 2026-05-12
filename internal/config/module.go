@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -287,51 +288,105 @@ func ResolveModulePath(name, gitRoot, globalDir string) (absPath, source string,
 		name, strings.Join(attempts, ", "))
 }
 
+// ResolveModuleContent looks up a module by name and returns its source
+// bytes plus a human-readable origin string. The origin is also the
+// cycle-detection key.
+//
+// Search order (least precedence first applied last → wins):
+//  1. <gitRoot>/.rampart/modules/<name>.hcl      (per-repo override)
+//  2. <globalDir>/modules/<name>.hcl             (user-supplied global)
+//  3. "assets/modules/<name>.hcl" in `bundled`   (binary's embedded lib)
+//
+// On disk the origin is the resolved absolute path (with symlinks
+// followed). For bundled hits the origin is "bundled:<rel>".
+func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src []byte, origin string, err error) {
+	if name == "" {
+		return nil, "", fmt.Errorf("module name must not be empty")
+	}
+	if filepath.IsAbs(name) || strings.HasPrefix(name, "..") {
+		return nil, "", fmt.Errorf("module name %q must be a relative path without leading '..'", name)
+	}
+	rel := name
+	if !strings.HasSuffix(rel, ".hcl") {
+		rel += ".hcl"
+	}
+
+	// On-disk attempts first.
+	abs, _, diskErr := ResolveModulePath(name, gitRoot, globalDir)
+	if diskErr == nil {
+		data, readErr := os.ReadFile(abs)
+		if readErr != nil {
+			return nil, "", fmt.Errorf("reading module %s: %w", abs, readErr)
+		}
+		return data, abs, nil
+	}
+
+	// Bundled fallback.
+	if bundled != nil {
+		bundledRel := "assets/modules/" + rel
+		if data, readErr := fs.ReadFile(bundled, bundledRel); readErr == nil {
+			return data, "bundled:" + bundledRel, nil
+		}
+	}
+
+	// Report a single composite error so the user sees every search
+	// location that was tried, including the bundled tier when applicable.
+	var attempts []string
+	if gitRoot != "" {
+		attempts = append(attempts, filepath.Join(gitRoot, ".rampart", "modules", rel))
+	}
+	if globalDir != "" {
+		attempts = append(attempts, filepath.Join(globalDir, "modules", rel))
+	}
+	if bundled != nil {
+		attempts = append(attempts, "bundled:assets/modules/"+rel)
+	}
+	return nil, "", fmt.Errorf("module %q not found in any search path: tried %s",
+		name, strings.Join(attempts, ", "))
+}
+
 // ExpandUseBlocks recursively resolves and expands the use blocks rooted at
 // `uses`. Returns a flat ModuleFragment that aggregates every transitive
-// contribution. Cycle detection is keyed by absolute resolved path, so a
-// module included twice via two different relative labels still cycles
+// contribution. Cycle detection is keyed by the resolved origin string, so
+// a module included twice via two different relative labels still cycles
 // correctly.
 //
-// gitRoot and globalDir define the module search path. parentCtx is the
-// EvalContext used to evaluate the args of the *outermost* use blocks
-// (typically nil for a profile, since profiles don't have variables of
-// their own in v1).
-func ExpandUseBlocks(uses []*UseBlock, gitRoot, globalDir string, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
+// gitRoot and globalDir define the on-disk module search path. bundled
+// (optional fs.FS rooted at "assets/modules/<name>.hcl") is the fallback
+// for modules not found on disk — typically the binary's embedded library.
+// parentCtx is the EvalContext used to evaluate the args of the
+// *outermost* use blocks (typically nil for a profile, since profiles
+// don't have variables of their own in v1).
+func ExpandUseBlocks(uses []*UseBlock, gitRoot, globalDir string, bundled fs.FS, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
 	stack := newCycleStack()
 	frag := &ModuleFragment{}
 	for _, u := range uses {
-		if err := expandOne(u, gitRoot, globalDir, parentCtx, frag, stack); err != nil {
+		if err := expandOne(u, gitRoot, globalDir, bundled, parentCtx, frag, stack); err != nil {
 			return nil, err
 		}
 	}
 	return frag, nil
 }
 
-// expandOne resolves a single use block: looks up the module file,
-// evaluates the args against parentCtx, builds a child EvalContext from
-// the resolved variable values, decodes the module's fragment body in that
-// context, and then recurses into the module's own use blocks.
-func expandOne(u *UseBlock, gitRoot, globalDir string, parentCtx *hcl.EvalContext, frag *ModuleFragment, stack *cycleStack) error {
-	abs, _, err := ResolveModulePath(u.ModulePath, gitRoot, globalDir)
+// expandOne resolves a single use block: looks up the module file (on
+// disk or in the bundled fs.FS), evaluates the args against parentCtx,
+// builds a child EvalContext from the resolved variable values, decodes
+// the module's fragment body in that context, and then recurses into the
+// module's own use blocks.
+func expandOne(u *UseBlock, gitRoot, globalDir string, bundled fs.FS, parentCtx *hcl.EvalContext, frag *ModuleFragment, stack *cycleStack) error {
+	src, origin, err := ResolveModuleContent(u.ModulePath, gitRoot, globalDir, bundled)
 	if err != nil {
 		return fmt.Errorf("%s:%d: use %q: %w",
 			u.DeclRange.Filename, u.DeclRange.Start.Line, u.ModulePath, err)
 	}
 
-	if stack.contains(abs) {
+	if stack.contains(origin) {
 		return fmt.Errorf("%s:%d: use %q: module cycle detected: %s",
 			u.DeclRange.Filename, u.DeclRange.Start.Line, u.ModulePath,
-			stack.formatCycle(abs))
+			stack.formatCycle(origin))
 	}
 
-	src, readErr := os.ReadFile(abs)
-	if readErr != nil {
-		return fmt.Errorf("%s:%d: use %q: reading module file %s: %w",
-			u.DeclRange.Filename, u.DeclRange.Start.Line, u.ModulePath, abs, readErr)
-	}
-
-	mf, parseErr := ParseModuleFile(abs, u.ModulePath, src)
+	mf, parseErr := ParseModuleFile(origin, u.ModulePath, src)
 	if parseErr != nil {
 		return parseErr
 	}
@@ -360,10 +415,10 @@ func expandOne(u *UseBlock, gitRoot, globalDir string, parentCtx *hcl.EvalContex
 
 	// Recurse into the module's own use blocks. They use modCtx as their
 	// parent, so their args can read this module's variables.
-	stack.push(abs)
+	stack.push(origin)
 	defer stack.pop()
 	for _, child := range mf.Use {
-		if err := expandOne(child, gitRoot, globalDir, modCtx, frag, stack); err != nil {
+		if err := expandOne(child, gitRoot, globalDir, bundled, modCtx, frag, stack); err != nil {
 			return err
 		}
 	}

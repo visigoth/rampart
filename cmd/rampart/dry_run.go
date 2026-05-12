@@ -24,7 +24,7 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 	gitRoot := config.FindGitRoot(startDir)
 	globalDir := config.GlobalShareDir()
 
-	reg, err := config.NewRegistry(gitRoot, globalDir)
+	reg, err := config.NewRegistryWithBundled(gitRoot, globalDir, bundledLibraryFS())
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}

@@ -11,11 +11,29 @@ import (
 	"strings"
 )
 
-//go:embed assets/agents/*.hcl
-var embeddedAgents embed.FS
+// embeddedLibrary holds the entire rampart-shipped library — every agent
+// HCL under assets/agents/ and every module HCL under assets/modules/.
+// The `all:` prefix includes files whose names start with `_` or `.`
+// (notably so the bundled README/.gitkeep files don't get silently
+// dropped, and so an embedded test fixture survives go:embed defaults).
+//
+//go:embed all:assets
+var embeddedLibrary embed.FS
 
-//go:embed all:assets/modules
-var embeddedModules embed.FS
+// embeddedAgents and embeddedModules are kept as aliases for backward
+// compatibility with the original extraction tests; they point at the
+// same embed.FS, just with different conceptual scopes (callers walk
+// either "assets/agents" or "assets/modules" inside).
+var (
+	embeddedAgents  = embeddedLibrary
+	embeddedModules = embeddedLibrary
+)
+
+// bundledLibraryFS returns the embedded library as an fs.FS, ready to
+// hand to config.NewRegistryWithBundled. The fs is rooted at the binary
+// — paths inside it look like "assets/agents/<name>.hcl" and
+// "assets/modules/<category>/<name>.hcl".
+func bundledLibraryFS() fs.FS { return embeddedLibrary }
 
 // hashesFile is the filename used to record the SHA-256 hash of each embedded
 // profile when it was last extracted. Used to detect user-modified profiles.

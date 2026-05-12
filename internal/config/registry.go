@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,12 @@ import (
 
 // Registry indexes agent and profile configs across global, repo-wide, and
 // project-scoped directories. It implements FR8-FR12 name resolution semantics.
+//
+// Three scopes for name resolution, in precedence order:
+//   1. Per-repo  (<gitRoot>/.rampart/)
+//   2. User-supplied global (<globalDir>/) — rampart never writes here
+//   3. Bundled  (fs.FS rooted at "assets/agents" / "assets/modules") —
+//      the embedded library shipped with the binary
 type Registry struct {
 	// agents maps qualified names ("project/name" or bare "name") to AgentConfig.
 	// Bare names key on the simple name; qualified names key on "project/name".
@@ -20,22 +27,46 @@ type Registry struct {
 	gitRoot    string
 	globalDir  string
 	rampartDir string
+
+	// bundled is the embedded library (typically a Go embed.FS) holding the
+	// rampart-shipped agents and modules trees. Search keys are the rooted
+	// paths "assets/agents/<name>.hcl" and "assets/modules/<name>.hcl".
+	// Optional — nil disables bundled lookup (useful in unit tests).
+	bundled fs.FS
 }
 
-// NewRegistry builds a registry by scanning all three scopes. Pass:
+// NewRegistry builds a registry by scanning all configured scopes. Pass:
 //   - gitRoot: path to the git repository root (may be "" if not in a repo)
-//   - globalDir: path to ~/.local/share/rampart/ (may be "" to skip)
+//   - globalDir: user-supplied module/agent directory; rampart no longer
+//     auto-populates this — it exists only for content the user has placed
+//     themselves. May be "" to skip.
 func NewRegistry(gitRoot, globalDir string) (*Registry, error) {
+	return NewRegistryWithBundled(gitRoot, globalDir, nil)
+}
+
+// NewRegistryWithBundled is NewRegistry plus a fallback fs.FS for the
+// rampart-shipped bundled library. The bundled tree is expected to be
+// rooted at "assets/agents/*.hcl" and "assets/modules/**". When the
+// caller doesn't have an embedded fs to pass (e.g., unit tests), use
+// NewRegistry instead.
+func NewRegistryWithBundled(gitRoot, globalDir string, bundled fs.FS) (*Registry, error) {
 	r := &Registry{
-		agents:     make(map[string]*AgentConfig),
-		profiles:   make(map[string]*ProfileConfig),
-		gitRoot:    gitRoot,
-		globalDir:  globalDir,
+		agents:    make(map[string]*AgentConfig),
+		profiles:  make(map[string]*ProfileConfig),
+		gitRoot:   gitRoot,
+		globalDir: globalDir,
+		bundled:   bundled,
 	}
 	if gitRoot != "" {
 		r.rampartDir = filepath.Join(gitRoot, ".rampart")
 	}
 
+	// Order is least-specific to most-specific: bundled agents are loaded
+	// first so user-global and repo-scoped agents can shadow them with the
+	// same bare name; project-scoped wins everything.
+	if err := r.indexBundled(); err != nil {
+		return nil, err
+	}
 	if err := r.indexGlobal(); err != nil {
 		return nil, err
 	}
@@ -224,9 +255,54 @@ func (r *Registry) DefaultProfile() string {
 
 // --- internal indexing ---
 
-// indexGlobal scans ~/.local/share/rampart/ for agents. Bare name wins here
-// only if not already claimed by repo-wide or project scope (repo/project
-// are indexed after global, overwriting).
+// indexBundled scans the rampart-shipped embedded fs.FS for agents. These
+// are the rampart-bundled defaults (e.g. coding/planning/reviewing); they
+// can be shadowed by anything later in the indexing order. No-op when no
+// bundled fs was supplied.
+func (r *Registry) indexBundled() error {
+	if r.bundled == nil {
+		return nil
+	}
+
+	// Multi-agent file: assets/agents.hcl.
+	if src, err := fs.ReadFile(r.bundled, "assets/agents.hcl"); err == nil {
+		agents, err := ParseAgentFile("bundled:agents.hcl", src)
+		if err != nil {
+			return err
+		}
+		for _, a := range agents {
+			r.registerAgent(a, "", scopeGlobal)
+		}
+	}
+
+	// Individual agents under assets/agents/<name>.hcl.
+	entries, err := fs.ReadDir(r.bundled, "assets/agents")
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".hcl") {
+				continue
+			}
+			rel := "assets/agents/" + e.Name()
+			src, readErr := fs.ReadFile(r.bundled, rel)
+			if readErr != nil {
+				return fmt.Errorf("reading bundled %s: %w", rel, readErr)
+			}
+			agents, parseErr := ParseAgentFile("bundled:"+rel, src)
+			if parseErr != nil {
+				return parseErr
+			}
+			for _, a := range agents {
+				r.registerAgent(a, "", scopeGlobal)
+			}
+		}
+	}
+	return nil
+}
+
+// indexGlobal scans ~/.local/share/rampart/ for agents the user has placed
+// there themselves. Rampart no longer auto-populates this directory; it
+// exists only for content the user manages directly. Bare-name agents
+// here shadow bundled ones; repo + project scopes shadow these in turn.
 func (r *Registry) indexGlobal() error {
 	if r.globalDir == "" {
 		return nil
@@ -429,7 +505,7 @@ func (r *Registry) indexProfileFile(path, project, profileName string, isShortha
 		// The expander concatenates contributions and dedups path lists.
 		// Failure here is reported as a profile load error.
 		if len(p.Use) > 0 {
-			frag, err := ExpandUseBlocks(p.Use, r.gitRoot, r.globalDir, nil)
+			frag, err := ExpandUseBlocks(p.Use, r.gitRoot, r.globalDir, r.bundled, nil)
 			if err != nil {
 				return fmt.Errorf("%s: profile %q: %w", path, p.Name, err)
 			}
