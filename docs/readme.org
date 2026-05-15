@@ -263,7 +263,7 @@ The macOS-specific tests require =/usr/bin/sandbox-exec= and the macOS
 unified log API. They are gated by =//go:build darwin=:
 
 #+begin_src sh
-cd go
+cd code/go
 go test ./internal/rampart/sandbox/macos/... ./internal/rampart/supervisor/...
 #+end_src
 
@@ -323,7 +323,7 @@ To verify Linux build constraints from a Mac without running the tests
 themselves (useful when editing build-tagged files):
 
 #+begin_src sh
-cd go
+cd code/go
 CGO_ENABLED=1 GOOS=linux go vet ./...
 #+end_src
 
