@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/visigoth/rampart/internal/session"
 	"github.com/visigoth/rampart/internal/supervisor"
@@ -17,18 +19,31 @@ import (
 // in-flight escalation map. The engine publishes via Publish (allocating an
 // ID and pushing an OutboundEscalationEvent); subscribers (e.g. `rampart
 // escalations --watch`) reply with InboundMessage{Type:"command", ...} which
-// the server hands to HandleCommand.
+// the server hands to HandleCommand. The bridge also implements
+// session.EscalationLister, so `rampart escalations` (no flags) and the
+// auto-list a fresh `--watch` subscriber gets on connect see the same
+// pending set the engine is currently waiting on.
 type sessionBridge struct {
 	server  *session.Server
 	idCount atomic.Int64
 
 	mu      sync.Mutex
-	pending map[int64]chan supervisor.SocketResponse
+	pending map[int64]*pendingEscalation
+}
+
+// pendingEscalation is the bridge's view of an in-flight escalation:
+// what to send when the subscriber answers (resp), plus enough info to
+// render a list entry to a late-joining subscriber.
+type pendingEscalation struct {
+	resp      chan supervisor.SocketResponse
+	operation string
+	resource  string
+	createdAt time.Time
 }
 
 func newSessionBridge() *sessionBridge {
 	return &sessionBridge{
-		pending: make(map[int64]chan supervisor.SocketResponse),
+		pending: make(map[int64]*pendingEscalation),
 	}
 }
 
@@ -46,15 +61,24 @@ func (b *sessionBridge) Publish(ctx context.Context, ev supervisor.ViolationEven
 	id := b.idCount.Add(1)
 	ch := make(chan supervisor.SocketResponse, 1)
 
+	operation := ev.Required.String()
+	resource := ev.Path
+	createdAt := time.Now()
+
 	b.mu.Lock()
-	b.pending[id] = ch
+	b.pending[id] = &pendingEscalation{
+		resp:      ch,
+		operation: operation,
+		resource:  resource,
+		createdAt: createdAt,
+	}
 	b.mu.Unlock()
 
 	b.server.PushEscalation(session.OutboundEscalationEvent{
 		Type:      "escalation",
 		ID:        id,
-		Operation: ev.Required.String(),
-		Resource:  ev.Path,
+		Operation: operation,
+		Resource:  resource,
 		Status:    "pending",
 	})
 
@@ -72,7 +96,7 @@ func (b *sessionBridge) Publish(ctx context.Context, ev supervisor.ViolationEven
 // the engine's response channel for the matching escalation ID.
 func (b *sessionBridge) HandleCommand(action string, escalationID int64, pattern string) string {
 	b.mu.Lock()
-	ch, ok := b.pending[escalationID]
+	p, ok := b.pending[escalationID]
 	if ok {
 		delete(b.pending, escalationID)
 	}
@@ -81,7 +105,7 @@ func (b *sessionBridge) HandleCommand(action string, escalationID int64, pattern
 		return "not_found"
 	}
 	select {
-	case ch <- supervisor.SocketResponse{Action: action, Pattern: pattern}:
+	case p.resp <- supervisor.SocketResponse{Action: action, Pattern: pattern}:
 	default:
 		return "already_resolved"
 	}
@@ -98,7 +122,36 @@ func (b *sessionBridge) HandleCommand(action string, escalationID int64, pattern
 	return "not_found"
 }
 
+// ListEscalations implements session.EscalationLister. Returns a
+// snapshot of every in-flight escalation sorted by ID (which is the
+// monotonic creation order, since idCount only increases).
+//
+// Without this, `rampart escalations` (the list subcommand) and the
+// auto-list a fresh `--watch` subscriber gets on subscribe both
+// returned an empty list — the server's Lister was nil, so even when
+// the engine was actively waiting on a decision, list queries
+// reported "no pending escalations". That made the CLI feel broken
+// even though pushes via PushEscalation (which doesn't go through
+// the lister) were arriving correctly.
+func (b *sessionBridge) ListEscalations() []session.OutboundEscalation {
+	b.mu.Lock()
+	out := make([]session.OutboundEscalation, 0, len(b.pending))
+	for id, p := range b.pending {
+		out = append(out, session.OutboundEscalation{
+			ID:        id,
+			Operation: p.operation,
+			Resource:  p.resource,
+			Status:    "pending",
+			Timestamp: p.createdAt.UTC().Format(time.RFC3339),
+		})
+	}
+	b.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 var (
 	_ supervisor.SocketPublisher = (*sessionBridge)(nil)
 	_ session.CommandHandler     = (*sessionBridge)(nil)
+	_ session.EscalationLister   = (*sessionBridge)(nil)
 )

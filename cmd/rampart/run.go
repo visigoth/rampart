@@ -76,6 +76,7 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	srv := session.NewServer(session.ServerConfig{
 		SocketPath: socketPath,
 		Commands:   bridge,
+		Lister:     bridge,
 	})
 	fatal = append(fatal, srv)
 
