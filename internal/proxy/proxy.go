@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -79,6 +80,13 @@ func Start(cfg Config) (*Proxy, error) {
 	// Build the goproxy handler.
 	gp := goproxy.NewProxyHttpServer()
 	gp.Verbose = false
+	// goproxy's constructor installs its own log.Logger pointed
+	// directly at os.Stderr, which bypasses any global log.SetOutput
+	// done elsewhere. Re-point it at the standard log.Default() so
+	// rampart's interactive-mode redirect (cmd/rampart/logging.go's
+	// configureSlog → stdlog.SetOutput) catches its WARN lines
+	// instead of clobbering the agent's TUI hours into a session.
+	gp.Logger = stdlog.Default()
 
 	// HTTPS CONNECT handler: domain check, then MITM or tunnel (TR6, TR67, TR68).
 	gp.OnRequest().HandleConnectFunc(func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {

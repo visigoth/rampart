@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -64,7 +65,21 @@ func configureSlog(flags *runFlags) (logPath string, cleanup func()) {
 	handler := slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(handler))
 
-	cleanup = func() { _ = f.Close() }
+	// Also redirect Go's standard-library log package. Several libraries
+	// rampart depends on bypass slog and write to log.Default() directly
+	// — most visibly goproxy (`2026/05/12 23:08:10 [161] WARN: Error
+	// copying to client: ...`), but also crypto/tls, net/http error
+	// paths, etc. Without this redirect those lines land on stderr and
+	// clobber the interactive agent's TUI hours after rampart started.
+	// Save the previous output so cleanup can restore it; this matters
+	// in tests that share the process with other code.
+	prevLogOut := stdlog.Default().Writer()
+	stdlog.SetOutput(sink)
+
+	cleanup = func() {
+		stdlog.SetOutput(prevLogOut)
+		_ = f.Close()
+	}
 	return logPath, cleanup
 }
 
