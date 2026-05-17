@@ -19,6 +19,16 @@ read = [
   "/etc/ssl/cert.pem",
   "/etc/pki/tls/certs",
   "/usr/share/ca-certificates",
+  # macOS noise-probe paths that every modern runtime touches at
+  # startup — Bun (claude), node, swift, etc. all stat / read these
+  # via system frameworks. Each one we don't allow becomes a
+  # sandbox deny that the auth engine publishes as an escalation,
+  # which after the (default 30s) timeout escalates to SIGKILL —
+  # killing claude mid-session because nobody approved a noise read.
+  # The contents are diagnostic config, not credentials, so a broad
+  # read grant is safe.
+  "/Library/Preferences/Logging",
+  "/Library/Preferences/com.apple.networkd.plist",
 ]
 
 exec = [
