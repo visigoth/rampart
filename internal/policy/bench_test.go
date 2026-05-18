@@ -1,4 +1,4 @@
-// Performance benchmarks for the policy compilation pipeline (.2.3).
+// Performance benchmarks for the policy compilation pipeline.
 // Verifies AC9: full compilation completes in under 50ms (TR150).
 package policy
 
@@ -47,17 +47,17 @@ func realisticAgent() *config.AgentConfig {
 // realisticProfile builds a ProfileConfig representative of a real project profile.
 func realisticProfile() *config.ProfileConfig {
 	return &config.ProfileConfig{
-		Name:    "",
-		Workdir: "/home/user/code/",
+		Name:    "demo",
+		Workdir: "/home/user/code/demo",
 		Read: []string{
-			"/home/user/code/",
+			"/home/user/code/demo",
 			"/home/user/.config/git",
 			"/usr/share/doc",
 			"/etc/ssl/certs",
 			"/usr/lib/go",
 		},
 		Write: []string{
-			"/home/user/code/",
+			"/home/user/code/demo",
 			"/home/user/.cache/go",
 			"/tmp/build",
 		},

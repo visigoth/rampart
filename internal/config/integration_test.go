@@ -1,4 +1,4 @@
-// Integration tests for config loading + registry resolution (.1.3).
+// Integration tests for config loading + registry resolution.
 // Uses realistic HCL fixture trees that simulate actual user config layouts.
 package config
 
@@ -17,13 +17,13 @@ import (
 //	<gitRoot>/
 //	  .git/
 //	  .rampart/
-//	    defaults.hcl                        (default_agent=coding, default_profile=/default)
+//	    defaults.hcl                        (default_agent=coding, default_profile=demo/default)
 //	    agents.hcl                          (repo-wide: "coding", "planning")
 //	    agents/
 //	      reviewing.hcl                     (repo-wide single file: "reviewing")
-//	    .hcl                            (shorthand profile for "" project)
+//	    demo.hcl                            (shorthand profile for "demo" project)
 //	    profiles/
-//	      /
+//	      demo/
 //	        default.hcl                     (project default profile)
 //	        ci.hcl                          (named project profile)
 //	        agents/
@@ -55,7 +55,7 @@ func buildFullFixture(t *testing.T) (gitRoot, globalDir string) {
 	write(filepath.Join(r, "defaults.hcl"), `
 defaults {
   default_agent   = "coding"
-  default_profile = "/default"
+  default_profile = "demo/default"
 }
 `)
 
@@ -101,15 +101,15 @@ agent "reviewing" {
 }
 `)
 
-	// Shorthand profile .rampart/.hcl.
-	write(filepath.Join(r, ".hcl"), `
+	// Shorthand profile .rampart/demo.hcl.
+	write(filepath.Join(r, "demo.hcl"), `
 profile "shorthand" {
   workdir = "."
 }
 `)
 
 	// Project default profile.
-	write(filepath.Join(r, "profiles", "", "default.hcl"), `
+	write(filepath.Join(r, "profiles", "demo", "default.hcl"), `
 profile "default" {
   workdir         = "."
   read            = ["/etc", "/usr/share"]
@@ -134,10 +134,10 @@ profile "default" {
 `)
 
 	// Named CI profile.
-	write(filepath.Join(r, "profiles", "", "ci.hcl"), `
+	write(filepath.Join(r, "profiles", "demo", "ci.hcl"), `
 profile "ci" {
-  workdir = "/ci/workspace"
-  exec    = ["/usr/bin", "/ci/bin"]
+  workdir = "demo/ci/workspace"
+  exec    = ["/usr/bin", "demo/ci/bin"]
 
   network {
     domain "api.anthropic.com" {}
@@ -146,7 +146,7 @@ profile "ci" {
 `)
 
 	// Project-scoped agent.
-	write(filepath.Join(r, "profiles", "", "agents", "infra.hcl"), `
+	write(filepath.Join(r, "profiles", "demo", "agents", "infra.hcl"), `
 agent "infra" {
   description  = "Infrastructure agent - project-scoped"
   filesystem   = "read-write"
@@ -264,9 +264,9 @@ func TestIntegration_ProjectScopedResolution(t *testing.T) {
 	}
 
 	// Project-scoped agent via qualified name.
-	infra, err := reg.ResolveAgent("/infra")
+	infra, err := reg.ResolveAgent("demo/infra")
 	if err != nil {
-		t.Fatalf("/infra: %v", err)
+		t.Fatalf("demo/infra: %v", err)
 	}
 	if infra.Description != "Infrastructure agent - project-scoped" {
 		t.Errorf("infra description: got %q", infra.Description)
@@ -276,27 +276,27 @@ func TestIntegration_ProjectScopedResolution(t *testing.T) {
 	}
 
 	// Qualified default profile.
-	def, err := reg.ResolveProfile("/default")
+	def, err := reg.ResolveProfile("demo/default")
 	if err != nil {
-		t.Fatalf("/default: %v", err)
+		t.Fatalf("demo/default: %v", err)
 	}
 	if def.Workdir != "." {
-		t.Errorf("/default workdir: got %q", def.Workdir)
+		t.Errorf("demo/default workdir: got %q", def.Workdir)
 	}
 	if len(def.Read) != 2 {
-		t.Errorf("/default read: got %v", def.Read)
+		t.Errorf("demo/default read: got %v", def.Read)
 	}
 	if def.Network == nil || len(def.Network.Domains) != 3 {
-		t.Errorf("/default network domains: expected 3")
+		t.Errorf("demo/default network domains: expected 3")
 	}
 
 	// Named project profile.
-	ci, err := reg.ResolveProfile("/ci")
+	ci, err := reg.ResolveProfile("demo/ci")
 	if err != nil {
-		t.Fatalf("/ci: %v", err)
+		t.Fatalf("demo/ci: %v", err)
 	}
-	if ci.Workdir != "/ci/workspace" {
-		t.Errorf("/ci workdir: got %q", ci.Workdir)
+	if ci.Workdir != "demo/ci/workspace" {
+		t.Errorf("demo/ci workdir: got %q", ci.Workdir)
 	}
 }
 
@@ -307,9 +307,9 @@ func TestIntegration_StrictProjectScoping(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 
-	// "/coding" — coding exists in repo scope but NOT in 's agents/.
+	// "demo/coding" — coding exists in repo scope but NOT in demo's agents/.
 	// Must error; must NOT fall through to repo-wide.
-	_, err = reg.ResolveAgent("/coding")
+	_, err = reg.ResolveAgent("demo/coding")
 	if err == nil {
 		t.Fatal("expected error: qualified name not in project scope should not fall through")
 	}
@@ -317,10 +317,10 @@ func TestIntegration_StrictProjectScoping(t *testing.T) {
 		t.Errorf("error should mention project scope: %v", err)
 	}
 
-	// "/reviewing" — reviewing is in repo-wide agents/, not  project.
-	_, err = reg.ResolveAgent("/reviewing")
+	// "demo/reviewing" — reviewing is in repo-wide agents/, not  project.
+	_, err = reg.ResolveAgent("demo/reviewing")
 	if err == nil {
-		t.Fatal("expected error: reviewing not in  project scope")
+		t.Fatal("expected error: reviewing not in demo project scope")
 	}
 }
 
@@ -334,8 +334,8 @@ func TestIntegration_DefaultsFileDriversSelection(t *testing.T) {
 	if reg.DefaultAgent() != "coding" {
 		t.Errorf("DefaultAgent: got %q, want %q", reg.DefaultAgent(), "coding")
 	}
-	if reg.DefaultProfile() != "/default" {
-		t.Errorf("DefaultProfile: got %q, want %q", reg.DefaultProfile(), "/default")
+	if reg.DefaultProfile() != "demo/default" {
+		t.Errorf("DefaultProfile: got %q, want %q", reg.DefaultProfile(), "demo/default")
 	}
 }
 
@@ -346,14 +346,14 @@ func TestIntegration_ProfileShorthandFallback(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 
-	// --profile  (bare, resolves to /default).
-	p, err := reg.ResolveProfile("")
+	// --profile demo (bare, resolves to demo/default).
+	p, err := reg.ResolveProfile("demo")
 	if err != nil {
-		t.Fatalf(" bare: %v", err)
+		t.Fatalf("demo bare: %v", err)
 	}
 	// Should get the canonical default.hcl, not the shorthand.
 	if p.Name != "default" && p.Name != "shorthand" {
-		t.Errorf(" bare resolved to unexpected profile: %q", p.Name)
+		t.Errorf("demo bare resolved to unexpected profile: %q", p.Name)
 	}
 }
 

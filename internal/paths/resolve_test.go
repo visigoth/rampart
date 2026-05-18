@@ -24,17 +24,17 @@ func TestResolve_TildeExpandsToHome(t *testing.T) {
 func TestResolve_TildeSlashExpandsToHomeSubpath(t *testing.T) {
 	home := t.TempDir()
 	// Create a real subdirectory so EvalSymlinks works.
-	subdir := filepath.Join(home, "code", "")
+	subdir := filepath.Join(home, "code", "demo")
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	ctx := Context{Home: home}
 
-	got, err := Resolve("~/code/", ctx)
+	got, err := Resolve("~/code/demo", ctx)
 	if err != nil {
-		t.Fatalf("~/code/ expansion: %v", err)
+		t.Fatalf("~/code/demo expansion: %v", err)
 	}
-	wantSuffix := filepath.Join("code", "")
+	wantSuffix := filepath.Join("code", "demo")
 	if !strings.HasSuffix(got, wantSuffix) {
 		t.Errorf("want suffix %q in %q", wantSuffix, got)
 	}
