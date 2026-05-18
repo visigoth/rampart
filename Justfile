@@ -1,0 +1,125 @@
+# Rampart build recipes.
+#
+# One-time setup (macOS): create a self-signed code-signing identity so
+# rebuilds keep a stable signature, which keeps Keychain ACLs (used for
+# the MITM CA private key per TR20) consistent across rebuilds.
+#
+#   1. Open Keychain Access (/System/Applications/Utilities/Keychain Access.app)
+#   2. Menu: Keychain Access > Certificate Assistant > Create a Certificate...
+#   3. Name: Rampart Local Dev. Identity Type: Self Signed Root.
+#      Certificate Type: Code Signing. Override Defaults: optional.
+#   4. Verify: security find-identity -v -p codesigning
+#      should list "Rampart Local Dev"
+#
+# Without the cert, install falls back to adhoc signing (-) and Keychain
+# will prompt on each rebuild's first MITM CA access.
+
+local_prefix := "/opt/shaheengandhi"
+local_bin_dir := local_prefix + "/bin"
+local_share_dir := local_prefix + "/share"
+signing_identity := "Rampart Local Dev"
+
+# Default: list recipes.
+default:
+    @just --list
+
+# Build the rampart binary into .build/rampart/.
+build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    plist_path="$(pwd)/cmd/rampart/Info.plist"
+    install_share_dir="{{ local_share_dir }}/rampart"
+    mkdir -p .build/rampart
+    # -X main.installShareDir points the binary at the on-disk
+    # canonical library location (populated by `just install` below).
+    # Without it (e.g. `go install`) the binary falls back to its
+    # embedded fs.FS so the agent + module library is always available.
+    go build \
+        -ldflags="-X main.installShareDir=${install_share_dir} -linkmode external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,${plist_path}" \
+        -o .build/rampart/rampart \
+        ./cmd/rampart
+    echo "Built: .build/rampart/rampart"
+
+# Build a goreleaser snapshot (single-target darwin/arm64).
+snapshot:
+    goreleaser build --single-target --snapshot --clean
+
+# Run rampart tests.
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname)" == "Darwin" ]]; then
+        plist_path="$(pwd)/cmd/rampart/Info.plist"
+        go test \
+            -ldflags="-linkmode external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,${plist_path}" \
+            ./cmd/rampart/... ./internal/...
+    else
+        go test ./cmd/rampart/... ./internal/...
+    fi
+
+# Install rampart binary, man page, completions, and bundled library
+# (agents + modules) under /opt/shaheengandhi.
+install: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    binary=".build/rampart/rampart"
+    if security find-identity -v -p codesigning 2>/dev/null | grep -q "{{ signing_identity }}"; then
+        identity="{{ signing_identity }}"
+        echo "Signing with identity: ${identity}"
+    else
+        identity="-"
+        echo "WARNING: '{{ signing_identity }}' not in Keychain; falling back to adhoc signing."
+        echo "         Keychain will reprompt on each rebuild's first MITM CA access."
+        echo "         See Justfile header for one-time cert setup."
+    fi
+    codesign --sign "${identity}" \
+        --identifier com.shaheengandhi.rampart \
+        --force \
+        "${binary}"
+    sudo install -d {{ local_bin_dir }}
+    sudo install -m 0755 "${binary}" {{ local_bin_dir }}/rampart
+    sudo install -d {{ local_share_dir }}/man/man1
+    "${binary}" docs man --output-dir /tmp/rampart-man
+    sudo install -m 0644 /tmp/rampart-man/rampart.1 {{ local_share_dir }}/man/man1/rampart.1
+    rm -rf /tmp/rampart-man
+    sudo install -d {{ local_share_dir }}/zsh/site-functions
+    "${binary}" completion zsh | sudo tee {{ local_share_dir }}/zsh/site-functions/_rampart >/dev/null
+    sudo install -d {{ local_share_dir }}/bash-completion/completions
+    "${binary}" completion bash | sudo tee {{ local_share_dir }}/bash-completion/completions/rampart >/dev/null
+    mkdir -p "${HOME}/.config/fish/completions"
+    "${binary}" completion fish > "${HOME}/.config/fish/completions/rampart.fish"
+    # Install the bundled rampart library (agents + modules) to the
+    # canonical share dir. The binary's main.installShareDir ldflag
+    # points here (set in the build recipe above), so module/agent
+    # resolution reads from this tree at runtime.
+    #
+    # ~/.local/share/rampart/ is reserved for content the USER manages
+    # themselves — drop a module there to shadow the bundled copy of
+    # the same name. Rampart never writes to that user directory.
+    library_src="$(pwd)/cmd/rampart/assets"
+    install_share="{{ local_share_dir }}/rampart"
+    for sub in agents modules; do
+        if [ -d "${library_src}/${sub}" ]; then
+            sudo rm -rf "${install_share}/${sub}"
+            sudo install -d "${install_share}/${sub}"
+            while IFS= read -r f; do
+                sudo install -d "${install_share}/${sub}/$(dirname "$f")"
+                sudo install -m 0644 "${library_src}/${sub}/$f" "${install_share}/${sub}/$f"
+            done < <(cd "${library_src}/${sub}" && find . -type f -name '*.hcl' | sed 's|^\./||')
+            count=$(find "${library_src}/${sub}" -type f -name '*.hcl' | wc -l | tr -d ' ')
+            echo "Installed: ${install_share}/${sub}/ (${count} files)"
+        fi
+    done
+    echo "Installed: {{ local_bin_dir }}/rampart"
+
+# Tidy go module dependencies.
+tidy:
+    go mod tidy
+
+# Run go vet.
+vet:
+    go vet ./...
+
+# Remove build artifacts.
+clean:
+    rm -rf .build dist

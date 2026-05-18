@@ -1,0 +1,57 @@
+# goreleaser configuration for rampart.
+#
+# v1 scope: snapshot builds only. Used to produce a single darwin/arm64
+# binary with embedded Info.plist via the Mach-O __TEXT,__info_plist
+# linker section (TR20).
+#
+# Run:    goreleaser build --single-target --snapshot --clean
+# Output: dist/rampart_darwin_arm64_v8.0/rampart
+#
+# Sections marked DEFERRED are present so a v1.0 cutover (Homebrew, GitHub
+# Releases, SBOMs, GPG sigs) is a config flip rather than a rewrite.
+
+version: 2
+project_name: rampart
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: rampart
+    main: ./cmd/rampart
+    binary: rampart
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    ldflags:
+      - -linkmode external
+      # PWD is set by goreleaser to the directory it was invoked from
+      # (the repo root). The Info.plist path must be absolute because ld's
+      # -sectcreate is resolved at link time, not relative to the build dir.
+      - "-extldflags=-Wl,-sectcreate,__TEXT,__info_plist,{{ .Env.PWD }}/cmd/rampart/Info.plist"
+    flags:
+      - -trimpath
+
+# Linux builds are produced inside a devcontainer, not by goreleaser
+# running on a macOS host (CGo cross-compilation with libseccomp is
+# fragile). When a Linux release is needed, run goreleaser inside the
+# devcontainer with a separate config or extend this one with a builder
+# image.
+
+archives:
+  - id: snapshot
+    formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  disable: true # v1 has no GitHub Release publication
