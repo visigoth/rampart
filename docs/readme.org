@@ -32,7 +32,7 @@ rampart:
 ** macOS (host)
 
 #+begin_src sh
-just install rampart
+just install
 #+end_src
 
 This builds, code-signs (use the "Rampart Local Dev" identity if
@@ -42,29 +42,43 @@ present, ad-hoc signing otherwise), and installs to:
 - =/opt/shaheengandhi/share/man/man1/rampart.1= (man page)
 - =/opt/shaheengandhi/share/{zsh,bash-completion}/...= (completions)
 - =$HOME/.config/fish/completions/rampart.fish=
+- =/opt/shaheengandhi/share/rampart/{agents,modules}/= — the bundled
+  agent + module library, wiped and repopulated from the binary's
+  embedded =assets/= tree on every install
 
 A self-signed code-signing identity is recommended on macOS so rebuilds
 keep a stable signature. Without it the MITM CA's Keychain ACLs reset
 on every rebuild and Keychain prompts on first access. See the Justfile
 header for one-time cert setup instructions.
 
-** Linux (devcontainer)
+** Linux
+
+CGo cross-compilation with =libseccomp= is fragile from a macOS host,
+so the standalone repo doesn't ship a Linux build recipe. Build inside
+a Linux environment that has =bwrap=, =libseccomp-dev=, and =iptables=
+installed:
 
 #+begin_src sh
-just build rampart linux    # builds inside the rampart devcontainer
+go build -o rampart ./cmd/rampart
 #+end_src
 
-The devcontainer image already has =bwrap=, =libseccomp-dev=, and
-=iptables= installed. The resulting binary lands at
-=/opt/shaheengandhi/bin/rampart= inside the container.
+The =goreleaser.yml= snapshot config targets =darwin/arm64= only; a v1
+Linux pipeline is deferred.
 
-** First-run profile extraction
+** The bundled library
 
-The first time =rampart= runs it copies the embedded pre-baked agent
-profiles into =~/.local/share/rampart/agents/=, and the policy-module
-library into =~/.local/share/rampart/modules/= (preserving the
-=lang/=, =tooling/=, =ai/=, =system/=, =network/= subtree). User-modified
-files are detected by SHA-256 and preserved across upgrades.
+The agent + module library that ships with rampart lives in three
+layers, searched in this order at runtime:
+
+1. *User override* — =~/.local/share/rampart/{agents,modules}/=. Files
+   you drop here shadow same-named files in the install share dir.
+   Rampart never writes to this directory.
+2. *Install share dir* — =/opt/shaheengandhi/share/rampart/{agents,modules}/=.
+   Populated by =just install= directly from the binary's embedded
+   =assets/= tree. Treated as read-only by the running binary.
+3. *Embedded =fs.FS=* — compiled into the binary. Final fallback when
+   neither directory exists, e.g. for users who ran =go install
+   ./cmd/rampart= and never ran =just install=.
 
 The module library is the recommended way to compose project policies —
 see [[file:policy.org::*Modules][Modules]] in policy.org for the file
@@ -74,12 +88,13 @@ format, search-path resolution, and the bundled module catalog.
 
 Rampart reads policy from three scopes, lowest to highest priority:
 
-| Scope     | Location                                          | Purpose                                    |
-|-----------+---------------------------------------------------+--------------------------------------------|
-| Global    | =~/.local/share/rampart/agents/*.hcl=             | Pre-baked + user-installed agents          |
-| Repo-wide | =<git-root>/.rampart/agents.hcl=, =/agents/=      | Repo-shared agent overrides                |
-| Project   | =<git-root>/.rampart/profiles/<project>/=         | Project-specific profile (and agents)      |
-| Defaults  | =<git-root>/.rampart/defaults.hcl=                | Selects the default agent and profile      |
+| Scope         | Location                                                 | Purpose                                    |
+|---------------+----------------------------------------------------------+--------------------------------------------|
+| Global        | =/opt/shaheengandhi/share/rampart/agents/*.hcl=          | Bundled agents installed by =just install= |
+| User override | =~/.local/share/rampart/agents/*.hcl=                    | User-managed agents that shadow Global     |
+| Repo-wide     | =<git-root>/.rampart/agents.hcl=, =/agents/=             | Repo-shared agent overrides                |
+| Project       | =<git-root>/.rampart/profiles/<project>/=                | Project-specific profile (and agents)      |
+| Defaults      | =<git-root>/.rampart/defaults.hcl=                       | Selects the default agent and profile      |
 
 Agent-vs-profile split:
 - *Agent* declares what an AI tool /requests/ — abstract filesystem and
@@ -250,10 +265,10 @@ Execution-mode detection (highest priority first):
 ** Run the full suite (Mac + Linux from a Mac host)
 
 #+begin_src sh
-just test rampart
+just test
 #+end_src
 
-On macOS this runs =go test ./cmd/rampart/... ./internal/rampart/...=
+On macOS this runs =go test ./cmd/rampart/... ./internal/...=
 with the Info.plist linker flags needed for the macOS Seatbelt entitlements.
 On Linux it runs =go test= directly.
 
@@ -264,7 +279,7 @@ unified log API. They are gated by =//go:build darwin=:
 
 #+begin_src sh
 cd code/go
-go test ./internal/rampart/sandbox/macos/... ./internal/rampart/supervisor/...
+go test ./internal/sandbox/macos/... ./internal/supervisor/...
 #+end_src
 
 Notable suites:
@@ -293,7 +308,7 @@ podman run --rm \
     apt-get update -qq && apt-get install -y --no-install-recommends \
       bubblewrap libseccomp-dev iptables pkg-config build-essential \
       ca-certificates >/dev/null
-    go test -count=1 -timeout=5m ./cmd/rampart/... ./internal/rampart/...
+    go test -count=1 -timeout=5m ./cmd/rampart/... ./internal/...
   '
 #+end_src
 

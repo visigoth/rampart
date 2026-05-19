@@ -34,10 +34,15 @@ agent.
 Three search scopes, indexed in this order. Lower-priority entries are
 overwritten by higher-priority ones with the same name:
 
-1. *Global* — =~/.local/share/rampart/=
+1. *Global* — =/opt/shaheengandhi/share/rampart/= (the bundled library,
+   populated by =just install=) with =~/.local/share/rampart/= layered on
+   top as a user-managed override.
    - =agents.hcl= — multi-agent file
    - =agents/<name>.hcl= — single-agent files (one =agent= block per file)
-   - First-run extraction seeds this with pre-baked agents.
+   - The install share dir is wiped and repopulated from the binary's
+     embedded =assets/= on every =just install=. The user override dir
+     is never touched by rampart; files there shadow same-named files
+     in the install share dir.
 2. *Repo-wide* — =<git-root>/.rampart/=
    - =agents.hcl= and =agents/<name>.hcl= — agent overrides shared
      across the repo
@@ -72,7 +77,7 @@ Plus one special file:
 
 The Go API exposes:
 
-- =config.GlobalShareDir()= → =~/.local/share/rampart=
+- =config.GlobalShareDir()= → =~/.local/share/rampart= (user override layer)
 - =config.FindGitRoot(start)= → walks up from =start=
 
 * The HCL grammar
@@ -283,7 +288,8 @@ A module file is a top-level HCL body (no wrapping =module= block —
 the file's path under its search root /is/ the module name):
 
 #+begin_src hcl
-# ~/.local/share/rampart/modules/lang/python.hcl
+# /opt/shaheengandhi/share/rampart/modules/lang/python.hcl
+# (or ~/.local/share/rampart/modules/lang/python.hcl as a user override)
 
 variable "venv" {
   type        = string
@@ -321,7 +327,10 @@ network {
 =use "<path>"= searches in order and stops at the first match:
 
 1. =<git-root>/.rampart/modules/<path>.hcl=
-2. =~/.local/share/rampart/modules/<path>.hcl=
+2. =~/.local/share/rampart/modules/<path>.hcl= (user overrides)
+3. =/opt/shaheengandhi/share/rampart/modules/<path>.hcl= (bundled library)
+4. The binary's embedded =assets/modules/<path>.hcl= (final fallback
+   when no install share dir is present)
 
 The repo-local path wins so a project can override or fork a global
 module. Resolution failure produces a diagnostic at the =use= block's
@@ -347,10 +356,12 @@ naming each link.
 
 ** Ships-with-rampart library
 
-=just install rampart= lays down a curated module library at
-=/opt/shaheengandhi/share/rampart/modules/=, and the binary embeds the
-same tree and extracts it to =~/.local/share/rampart/modules/= on first
-run (user-edited files are preserved via SHA-256 detection).
+=just install= lays down a curated module library at
+=/opt/shaheengandhi/share/rampart/modules/= directly from the binary's
+embedded =assets/modules/= tree. The install dir is wiped and rewritten
+on every install — your edits belong in =~/.local/share/rampart/modules/=
+(user override layer, never touched by rampart) or in =<git-root>/.rampart/modules/=
+(repo-local).
 
 | Module           | Purpose                                                   |
 |------------------+-----------------------------------------------------------|
@@ -495,8 +506,9 @@ and deny everything else.
 
 * Pre-baked agents
 
-The first =rampart= invocation extracts these into
-=~/.local/share/rampart/agents/=:
+=just install= populates =/opt/shaheengandhi/share/rampart/agents/= with
+the bundled agents listed below, sourced from the binary's embedded
+=assets/agents/= tree:
 
 | File           | Identity            |
 |----------------+---------------------|
@@ -504,7 +516,9 @@ The first =rampart= invocation extracts these into
 | =planning.hcl=  | =planning= agent    |
 | =reviewing.hcl= | =reviewing= agent   |
 
-User edits to any of these files are preserved across rampart
-upgrades; only missing files are written on first run. Use
-=rampart init --rotate= to rescaffold the repo (this does not touch
+To customize one of these without losing it on the next install, copy
+it to =~/.local/share/rampart/agents/<name>.hcl= and edit there — the
+user override layer takes precedence over the install share dir.
+
+Use =rampart init --rotate= to rescaffold the repo (this does not touch
 the global agents).
