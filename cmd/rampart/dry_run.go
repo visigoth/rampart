@@ -23,7 +23,7 @@ type compiledPolicy struct {
 func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 	gitRoot := config.FindGitRoot(startDir)
 
-	reg, err := config.NewRegistryFromDirs(gitRoot, libraryGlobalDirs(), bundledLibraryFS())
+	reg, err := config.NewRegistryFromDirs(gitRoot, libraryGlobalDirs())
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}

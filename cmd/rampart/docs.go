@@ -115,12 +115,13 @@ ENVIRONMENT below for `+"`--verbose`"+` mirroring.`)
 agent + profile), profiles/<project>/<name>.hcl, agents.hcl, and
 modules/ (per-repo override modules).`)
 	fileRef(&b, "~/.local/share/rampart/{agents,modules}/", `User override library. Files placed here shadow same-named
-entries from the install-share dir and the embedded library.
-Rampart never writes to this directory.`)
-	fileRef(&b, "<install-share-dir>/rampart/{agents,modules}/", `Canonical install-time library. Populated by `+"`just install rampart`"+`
-to `+"`/opt/shaheengandhi/share/rampart/`"+` on the default  layout.
-The runtime location is baked into the binary via the
-`+"`main.installShareDir`"+` ldflag.`)
+entries in the install share dir. Rampart never writes to this
+directory.`)
+	fileRef(&b, "<install-share-dir>/rampart/{agents,modules}/", `Canonical install share dir, populated by the installer that placed
+the rampart binary on disk (Homebrew, the bash installer, or
+`+"`just install`"+`). The runtime location is computed
+relative to the binary at `+"`<exe-dir>/../share/rampart`"+`,
+overridable via `+"`$RAMPART_SHARE_DIR`"+`.`)
 	fileRef(&b, "~/.config/rampart/{ca.pem,ca-key.pem}", `Persistent MITM CA on Linux. macOS stores the CA in the system
 Keychain (file-backed when the install is adhoc-signed).`)
 
@@ -296,7 +297,7 @@ func renderConfiguration(b *bytes.Buffer) {
 	subsection(b, "Agent and profile resolution")
 	fmt.Fprintln(b, escapeProse(`When rampart starts without explicit `+"`--agent`"+` / `+"`--profile`"+`
 flags it reads `+"`<git-root>/.rampart/defaults.hcl`"+` for default_agent
-and default_profile. Name resolution walks four scopes from
+and default_profile. Name resolution walks three scopes from
 highest precedence to lowest:`))
 	fmt.Fprintln(b, ".RS")
 	fmt.Fprintln(b, ".PP")
@@ -304,29 +305,29 @@ highest precedence to lowest:`))
 	fmt.Fprintln(b, escapeProse(`Per-repository — `+"`<git-root>/.rampart/agents.hcl`"+`,
 `+"`<git-root>/.rampart/agents/<name>.hcl`"+`, and
 `+"`<git-root>/.rampart/profiles/<project>/<name>.hcl`"+`. Project-
-qualified profile names ("`+"`/limited`"+`") resolve here.`))
+qualified profile names ("`+"`demo/limited`"+`") resolve here.`))
 	fmt.Fprintln(b, ".IP 2. 4")
 	fmt.Fprintln(b, escapeProse(`User override — `+"`~/.local/share/rampart/agents/`"+` and
 `+"`~/.local/share/rampart/modules/`"+`. Files placed here shadow
-same-named entries from lower tiers. Rampart never writes to
-this directory.`))
+same-named entries in the install share dir. Rampart never
+writes to this directory.`))
 	fmt.Fprintln(b, ".IP 3. 4")
 	fmt.Fprintln(b, escapeProse(`Install share — `+"`<install-share-dir>/rampart/{agents,modules}/`"+`.
-Populated at `+"`just install rampart`"+` time; the runtime location
-is baked into the binary via the `+"`main.installShareDir`"+`
-ldflag.`))
-	fmt.Fprintln(b, ".IP 4. 4")
-	fmt.Fprintln(b, escapeProse(`Embedded fallback — the rampart-shipped library inside the
-binary's `+"`fs.FS`"+`. Used when none of the on-disk tiers has a
-match; what `+"`go install`"+` users get out of the box.`))
+Populated by whichever installer placed the rampart binary on
+disk (Homebrew, the bash installer, or `+"`just install`"+`).
+The runtime location is computed relative to the binary at
+`+"`<exe-dir>/../share/rampart`"+`, overridable via
+`+"`$RAMPART_SHARE_DIR`"+`. Rampart no longer ships an embedded
+fallback library — if no install share dir exists, only the
+per-repo and user-override scopes are available.`))
 	fmt.Fprintln(b, ".RE")
-	fmt.Fprintln(b, escapeProse(`Bare agent names ("`+"`coding`"+`") resolve only at scopes 1–4
+	fmt.Fprintln(b, escapeProse(`Bare agent names ("`+"`coding`"+`") resolve only at scopes 1–3
 above. Profile names without a project prefix resolve to
 "`+"`<name>/default`"+`" when present, otherwise fail.`))
 
 	subsection(b, "Module resolution")
 	fmt.Fprintln(b, escapeProse(`Modules live under `+"`modules/<category>/<name>.hcl`"+` in any of
-the four resolution tiers above. A profile imports modules via
+the three resolution tiers above. A profile imports modules via
 `+"`use \"category/name\" { var1 = expr1, ... }`"+`. The expander
 recursively pulls in nested `+"`use`"+` blocks, evaluates variable
 substitutions against each module's `+"`variable`"+` blocks (with

@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,11 +18,13 @@ import (
 //      this is where the user puts custom or override modules
 //   3. System-installed       remaining globalDirs entries, e.g.
 //      /opt/shaheengandhi/share/rampart/ — the canonical install
-//      location for the rampart-shipped library, populated by
-//      `just install rampart`
-//   4. Bundled (fs.FS)        last-resort fallback for `go install`
-//      users who have no on-disk library; pulled directly from the
-//      binary's embedded assets
+//      location for the rampart-shipped library, populated by the
+//      installer (Homebrew, the bash installer, or `just install`).
+//
+// rampart no longer ships an embedded fallback library. If none of the
+// global dirs hold the agent/module the caller asked for, resolution
+// fails — install rampart through one of the supported channels to
+// populate the system-installed layer.
 type Registry struct {
 	// agents maps qualified names ("project/name" or bare "name") to AgentConfig.
 	// Bare names key on the simple name; qualified names key on "project/name".
@@ -34,50 +35,33 @@ type Registry struct {
 	gitRoot    string
 	globalDirs []string
 	rampartDir string
-
-	// bundled is the binary's embedded library, used only when no entry
-	// in globalDirs has the requested module/agent. Tests pass nil.
-	bundled fs.FS
 }
 
-// NewRegistry builds a registry with a single user-global directory and no
-// bundled fallback. Most callers should prefer NewRegistryWithBundled,
-// which supports the full search chain.
+// NewRegistry builds a registry with a single user-global directory.
+// Prefer NewRegistryFromDirs when you have an ordered chain of global
+// search directories (typically user override → install share dir).
 func NewRegistry(gitRoot, globalDir string) (*Registry, error) {
 	dirs := []string(nil)
 	if globalDir != "" {
 		dirs = []string{globalDir}
 	}
-	return NewRegistryFromDirs(gitRoot, dirs, nil)
-}
-
-// NewRegistryWithBundled is NewRegistry plus a fallback fs.FS for the
-// rampart-shipped bundled library. Kept for callers that already pass a
-// single globalDir; the search chain still uses just that one dir.
-func NewRegistryWithBundled(gitRoot, globalDir string, bundled fs.FS) (*Registry, error) {
-	dirs := []string(nil)
-	if globalDir != "" {
-		dirs = []string{globalDir}
-	}
-	return NewRegistryFromDirs(gitRoot, dirs, bundled)
+	return NewRegistryFromDirs(gitRoot, dirs)
 }
 
 // NewRegistryFromDirs builds a registry against an ordered list of
-// global search directories plus an optional bundled fs.FS fallback.
-// Order in globalDirs is precedence: earlier dirs shadow later ones.
-// Typical production wiring (in priority order):
+// global search directories. Order in globalDirs is precedence: earlier
+// dirs shadow later ones. Typical production wiring (in priority order):
 //
 //	dirs := []string{
 //	    "~/.local/share/rampart",                    // user overrides
-//	    "/opt/shaheengandhi/share/rampart",          // system install
+//	    "/opt/shaheengandhi/share/rampart",          // install share dir
 //	}
-func NewRegistryFromDirs(gitRoot string, globalDirs []string, bundled fs.FS) (*Registry, error) {
+func NewRegistryFromDirs(gitRoot string, globalDirs []string) (*Registry, error) {
 	r := &Registry{
 		agents:     make(map[string]*AgentConfig),
 		profiles:   make(map[string]*ProfileConfig),
 		gitRoot:    gitRoot,
 		globalDirs: globalDirs,
-		bundled:    bundled,
 	}
 	if gitRoot != "" {
 		r.rampartDir = filepath.Join(gitRoot, ".rampart")
@@ -86,16 +70,13 @@ func NewRegistryFromDirs(gitRoot string, globalDirs []string, bundled fs.FS) (*R
 	// Index in precedence order. registerAgent's "first to claim a bare
 	// name at a given scope wins" rule means earlier indexers shadow
 	// later ones at the same scope, so we walk globalDirs forward
-	// (user override first, system install second), then fall through
-	// to the bundled embed.FS. Repo runs last because scopeRepo
-	// overrides scopeGlobal via the scope-comparison path.
+	// (user override first, install share dir second). Repo runs last
+	// because scopeRepo overrides scopeGlobal via the scope-comparison
+	// path.
 	for _, dir := range r.globalDirs {
 		if err := r.indexAgentDir(dir, "", scopeGlobal); err != nil {
 			return nil, err
 		}
-	}
-	if err := r.indexBundled(); err != nil {
-		return nil, err
 	}
 	if err := r.indexRepo(); err != nil {
 		return nil, err
@@ -282,50 +263,6 @@ func (r *Registry) DefaultProfile() string {
 }
 
 // --- internal indexing ---
-
-// indexBundled scans the rampart-shipped embedded fs.FS for agents. These
-// are the rampart-bundled defaults (e.g. coding/planning/reviewing); they
-// can be shadowed by anything later in the indexing order. No-op when no
-// bundled fs was supplied.
-func (r *Registry) indexBundled() error {
-	if r.bundled == nil {
-		return nil
-	}
-
-	// Multi-agent file: assets/agents.hcl.
-	if src, err := fs.ReadFile(r.bundled, "assets/agents.hcl"); err == nil {
-		agents, err := ParseAgentFile("bundled:agents.hcl", src)
-		if err != nil {
-			return err
-		}
-		for _, a := range agents {
-			r.registerAgent(a, "", scopeGlobal)
-		}
-	}
-
-	// Individual agents under assets/agents/<name>.hcl.
-	entries, err := fs.ReadDir(r.bundled, "assets/agents")
-	if err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".hcl") {
-				continue
-			}
-			rel := "assets/agents/" + e.Name()
-			src, readErr := fs.ReadFile(r.bundled, rel)
-			if readErr != nil {
-				return fmt.Errorf("reading bundled %s: %w", rel, readErr)
-			}
-			agents, parseErr := ParseAgentFile("bundled:"+rel, src)
-			if parseErr != nil {
-				return parseErr
-			}
-			for _, a := range agents {
-				r.registerAgent(a, "", scopeGlobal)
-			}
-		}
-	}
-	return nil
-}
 
 // indexGlobal is a legacy no-op kept so existing test fixtures and any
 // out-of-tree callers don't break. The actual global-dir indexing is
@@ -529,7 +466,7 @@ func (r *Registry) indexProfileFile(path, project, profileName string, isShortha
 		// The expander concatenates contributions and dedups path lists.
 		// Failure here is reported as a profile load error.
 		if len(p.Use) > 0 {
-			frag, err := ExpandUseBlocksFromDirs(p.Use, r.gitRoot, r.globalDirs, r.bundled, nil)
+			frag, err := ExpandUseBlocksFromDirs(p.Use, r.gitRoot, r.globalDirs, nil)
 			if err != nil {
 				return fmt.Errorf("%s: profile %q: %w", path, p.Name, err)
 			}

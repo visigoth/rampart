@@ -39,10 +39,11 @@ overwritten by higher-priority ones with the same name:
    top as a user-managed override.
    - =agents.hcl= — multi-agent file
    - =agents/<name>.hcl= — single-agent files (one =agent= block per file)
-   - The install share dir is wiped and repopulated from the binary's
-     embedded =assets/= on every =just install=. The user override dir
-     is never touched by rampart; files there shadow same-named files
-     in the install share dir.
+   - The install share dir is populated by whichever installer placed
+     the rampart binary on disk (Homebrew, the bash installer, or
+     =just install= for local dev), sourced from the repo's =assets/=
+     tree. The user override dir is never touched by rampart; files
+     there shadow same-named files in the install share dir.
 2. *Repo-wide* — =<git-root>/.rampart/=
    - =agents.hcl= and =agents/<name>.hcl= — agent overrides shared
      across the repo
@@ -328,13 +329,14 @@ network {
 
 1. =<git-root>/.rampart/modules/<path>.hcl=
 2. =~/.local/share/rampart/modules/<path>.hcl= (user overrides)
-3. =/opt/shaheengandhi/share/rampart/modules/<path>.hcl= (bundled library)
-4. The binary's embedded =assets/modules/<path>.hcl= (final fallback
-   when no install share dir is present)
+3. =/opt/shaheengandhi/share/rampart/modules/<path>.hcl= (bundled library,
+   populated by the installer)
 
 The repo-local path wins so a project can override or fork a global
 module. Resolution failure produces a diagnostic at the =use= block's
-source range listing the paths it tried.
+source range listing the paths it tried — there is no embedded
+fallback, so a module that hasn't been installed to one of the three
+locations above is genuinely unresolvable.
 
 ** Variable scoping
 
@@ -356,12 +358,13 @@ naming each link.
 
 ** Ships-with-rampart library
 
-=just install= lays down a curated module library at
-=/opt/shaheengandhi/share/rampart/modules/= directly from the binary's
-embedded =assets/modules/= tree. The install dir is wiped and rewritten
-on every install — your edits belong in =~/.local/share/rampart/modules/=
-(user override layer, never touched by rampart) or in =<git-root>/.rampart/modules/=
-(repo-local).
+Installing rampart (via Homebrew, the bash installer, or =just install=
+for local dev) lays down a curated module library at
+=/opt/shaheengandhi/share/rampart/modules/= or =$(brew --prefix)/share/rampart/modules/=
+sourced from the repo's =assets/modules/= tree. The install dir is
+managed by the installer — your edits belong in
+=~/.local/share/rampart/modules/= (user override layer, never touched
+by rampart) or in =<git-root>/.rampart/modules/= (repo-local).
 
 | Module           | Purpose                                                   |
 |------------------+-----------------------------------------------------------|
@@ -506,9 +509,9 @@ and deny everything else.
 
 * Pre-baked agents
 
-=just install= populates =/opt/shaheengandhi/share/rampart/agents/= with
-the bundled agents listed below, sourced from the binary's embedded
-=assets/agents/= tree:
+Installing rampart populates =<install-share-dir>/rampart/agents/= with
+the bundled agents listed below, copied from the repo's =assets/agents/=
+tree:
 
 | File           | Identity            |
 |----------------+---------------------|

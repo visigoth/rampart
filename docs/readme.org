@@ -43,8 +43,7 @@ present, ad-hoc signing otherwise), and installs to:
 - =/opt/shaheengandhi/share/{zsh,bash-completion}/...= (completions)
 - =$HOME/.config/fish/completions/rampart.fish=
 - =/opt/shaheengandhi/share/rampart/{agents,modules}/= — the bundled
-  agent + module library, wiped and repopulated from the binary's
-  embedded =assets/= tree on every install
+  agent + module library, copied from the repo's =assets/= tree
 
 A self-signed code-signing identity is recommended on macOS so rebuilds
 keep a stable signature. Without it the MITM CA's Keychain ACLs reset
@@ -67,18 +66,25 @@ Linux pipeline is deferred.
 
 ** The bundled library
 
-The agent + module library that ships with rampart lives in three
-layers, searched in this order at runtime:
+The agent + module library that ships with rampart lives in two
+on-disk layers, searched in this order at runtime:
 
 1. *User override* — =~/.local/share/rampart/{agents,modules}/=. Files
    you drop here shadow same-named files in the install share dir.
    Rampart never writes to this directory.
-2. *Install share dir* — =/opt/shaheengandhi/share/rampart/{agents,modules}/=.
-   Populated by =just install= directly from the binary's embedded
-   =assets/= tree. Treated as read-only by the running binary.
-3. *Embedded =fs.FS=* — compiled into the binary. Final fallback when
-   neither directory exists, e.g. for users who ran =go install
-   ./cmd/rampart= and never ran =just install=.
+2. *Install share dir* — =/opt/shaheengandhi/share/rampart/{agents,modules}/=
+   (or =$(brew --prefix)/share/rampart/= on Homebrew installs). Populated
+   by whichever installer placed the rampart binary on disk. Treated as
+   read-only by the running binary. The runtime location is computed
+   from the binary's own path at =<exe-dir>/../share/rampart=; set
+   =$RAMPART_SHARE_DIR= to override.
+
+rampart does *not* ship an embedded fallback library — the binary is
+not usable for the bundled =coding= / =planning= / =reviewing= agents
+without one of the install channels (Homebrew, the bash installer, or
+=just install= for local dev) populating the install share dir. The
+trade-off: users can inspect, edit, and reason about the bundled HCL
+files on disk instead of having them invisibly baked into the binary.
 
 The module library is the recommended way to compose project policies —
 see [[file:policy.org::*Modules][Modules]] in policy.org for the file

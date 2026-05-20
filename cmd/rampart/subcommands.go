@@ -583,7 +583,7 @@ func openRegistry() (*config.Registry, error) {
 		return nil, fmt.Errorf("getting working directory: %w", err)
 	}
 	gitRoot := config.FindGitRoot(wd)
-	reg, err := config.NewRegistryFromDirs(gitRoot, libraryGlobalDirs(), bundledLibraryFS())
+	reg, err := config.NewRegistryFromDirs(gitRoot, libraryGlobalDirs())
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}

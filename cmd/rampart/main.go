@@ -21,16 +21,6 @@ import (
 var versionBytes []byte
 
 func main() {
-	// One-time migration: older versions of rampart auto-extracted the
-	// bundled agents and modules to ~/.local/share/rampart/. That made
-	// upgrades silently stale because the on-disk copies had precedence
-	// over the binary's current embedded library. The bundled library
-	// now lives entirely inside the binary; the user directory is
-	// reserved for content the user adds themselves. Best-effort cleanup
-	// of unmodified files lifted from the embed; user-edited files are
-	// preserved.
-	_ = migrateLegacyUserDir()
-
 	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}

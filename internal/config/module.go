@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -293,12 +292,12 @@ func ResolveModulePath(name, gitRoot, globalDir string) (absPath, source string,
 // ResolveModuleContentFromDirs. Prefer the latter for production wiring
 // that needs the full multi-dir search chain (user override + system
 // install).
-func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src []byte, origin string, err error) {
+func ResolveModuleContent(name, gitRoot, globalDir string) (src []byte, origin string, err error) {
 	dirs := []string(nil)
 	if globalDir != "" {
 		dirs = []string{globalDir}
 	}
-	return ResolveModuleContentFromDirs(name, gitRoot, dirs, bundled)
+	return ResolveModuleContentFromDirs(name, gitRoot, dirs)
 }
 
 // ResolveModuleContentFromDirs looks up a module by name and returns its
@@ -308,12 +307,12 @@ func ResolveModuleContent(name, gitRoot, globalDir string, bundled fs.FS) (src [
 // Search order (first hit wins):
 //  1. <gitRoot>/.rampart/modules/<name>.hcl                (per-repo)
 //  2. globalDirs[i]/modules/<name>.hcl  for each i in order
-//     (typical wiring: user override first, system install second)
-//  3. "assets/modules/<name>.hcl" inside `bundled`         (embed fallback)
+//     (typical wiring: user override first, install share dir second)
 //
-// On disk the origin is the resolved absolute path (with symlinks
-// followed). For bundled hits the origin is "bundled:<rel>".
-func ResolveModuleContentFromDirs(name, gitRoot string, globalDirs []string, bundled fs.FS) (src []byte, origin string, err error) {
+// The origin is the resolved absolute path (with symlinks followed).
+// rampart no longer ships an embedded fallback — modules must exist on
+// disk in one of the search dirs.
+func ResolveModuleContentFromDirs(name, gitRoot string, globalDirs []string) (src []byte, origin string, err error) {
 	if name == "" {
 		return nil, "", fmt.Errorf("module name must not be empty")
 	}
@@ -356,14 +355,6 @@ func ResolveModuleContentFromDirs(name, gitRoot string, globalDirs []string, bun
 		}
 	}
 
-	if bundled != nil {
-		bundledRel := "assets/modules/" + rel
-		attempts = append(attempts, "bundled:"+bundledRel)
-		if data, readErr := fs.ReadFile(bundled, bundledRel); readErr == nil {
-			return data, "bundled:" + bundledRel, nil
-		}
-	}
-
 	return nil, "", fmt.Errorf("module %q not found in any search path: tried %s",
 		name, strings.Join(attempts, ", "))
 }
@@ -374,41 +365,38 @@ func ResolveModuleContentFromDirs(name, gitRoot string, globalDirs []string, bun
 // a module included twice via two different relative labels still cycles
 // correctly.
 //
-// gitRoot and globalDir define the on-disk module search path. bundled
-// (optional fs.FS rooted at "assets/modules/<name>.hcl") is the fallback
-// for modules not found on disk — typically the binary's embedded library.
-// parentCtx is the EvalContext used to evaluate the args of the
-// *outermost* use blocks (typically nil for a profile, since profiles
-// don't have variables of their own in v1).
-func ExpandUseBlocks(uses []*UseBlock, gitRoot, globalDir string, bundled fs.FS, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
+// gitRoot and globalDir define the on-disk module search path. parentCtx
+// is the EvalContext used to evaluate the args of the *outermost* use
+// blocks (typically nil for a profile, since profiles don't have variables
+// of their own in v1).
+func ExpandUseBlocks(uses []*UseBlock, gitRoot, globalDir string, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
 	dirs := []string(nil)
 	if globalDir != "" {
 		dirs = []string{globalDir}
 	}
-	return ExpandUseBlocksFromDirs(uses, gitRoot, dirs, bundled, parentCtx)
+	return ExpandUseBlocksFromDirs(uses, gitRoot, dirs, parentCtx)
 }
 
 // ExpandUseBlocksFromDirs is ExpandUseBlocks but takes an ordered list
-// of global search dirs (e.g. user-override dir first, system-install
+// of global search dirs (e.g. user-override dir first, install share
 // dir second) so multi-tier deployments resolve in the right order.
-func ExpandUseBlocksFromDirs(uses []*UseBlock, gitRoot string, globalDirs []string, bundled fs.FS, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
+func ExpandUseBlocksFromDirs(uses []*UseBlock, gitRoot string, globalDirs []string, parentCtx *hcl.EvalContext) (*ModuleFragment, error) {
 	stack := newCycleStack()
 	frag := &ModuleFragment{}
 	for _, u := range uses {
-		if err := expandOne(u, gitRoot, globalDirs, bundled, parentCtx, frag, stack); err != nil {
+		if err := expandOne(u, gitRoot, globalDirs, parentCtx, frag, stack); err != nil {
 			return nil, err
 		}
 	}
 	return frag, nil
 }
 
-// expandOne resolves a single use block: looks up the module file (on
-// disk or in the bundled fs.FS), evaluates the args against parentCtx,
-// builds a child EvalContext from the resolved variable values, decodes
-// the module's fragment body in that context, and then recurses into the
-// module's own use blocks.
-func expandOne(u *UseBlock, gitRoot string, globalDirs []string, bundled fs.FS, parentCtx *hcl.EvalContext, frag *ModuleFragment, stack *cycleStack) error {
-	src, origin, err := ResolveModuleContentFromDirs(u.ModulePath, gitRoot, globalDirs, bundled)
+// expandOne resolves a single use block: looks up the module file on
+// disk, evaluates the args against parentCtx, builds a child EvalContext
+// from the resolved variable values, decodes the module's fragment body
+// in that context, and then recurses into the module's own use blocks.
+func expandOne(u *UseBlock, gitRoot string, globalDirs []string, parentCtx *hcl.EvalContext, frag *ModuleFragment, stack *cycleStack) error {
+	src, origin, err := ResolveModuleContentFromDirs(u.ModulePath, gitRoot, globalDirs)
 	if err != nil {
 		return fmt.Errorf("%s:%d: use %q: %w",
 			u.DeclRange.Filename, u.DeclRange.Start.Line, u.ModulePath, err)
@@ -452,7 +440,7 @@ func expandOne(u *UseBlock, gitRoot string, globalDirs []string, bundled fs.FS, 
 	stack.push(origin)
 	defer stack.pop()
 	for _, child := range mf.Use {
-		if err := expandOne(child, gitRoot, globalDirs, bundled, modCtx, frag, stack); err != nil {
+		if err := expandOne(child, gitRoot, globalDirs, modCtx, frag, stack); err != nil {
 			return err
 		}
 	}
