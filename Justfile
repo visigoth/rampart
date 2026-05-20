@@ -238,7 +238,11 @@ release VERSION:
 
     echo
     echo "Released ${tag}. Tarball at ${tarball} (sha256 ${sha256})."
-    echo "Update Formula/rampart.rb url/sha256 fields to point at the new release."
+    echo
+    echo "Next: bump the tap formula in the homebrew-rampart repo."
+    echo "  url     https://github.com/visigoth/rampart/archive/refs/tags/${tag}.tar.gz"
+    echo "  sha256  $(curl -fsSL https://github.com/visigoth/rampart/archive/refs/tags/${tag}.tar.gz 2>/dev/null | shasum -a 256 | awk '{print \$1}')"
+    echo "  version ${version}"
 
 # Tidy go module dependencies.
 tidy:

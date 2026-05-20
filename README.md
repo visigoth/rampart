@@ -16,10 +16,18 @@ flow for prompts that exceed the agent's policy budget.
 ### Homebrew
 
 ```sh
-brew install --formula https://raw.githubusercontent.com/visigoth/rampart/main/Formula/rampart.rb
+brew tap visigoth/rampart
+brew install rampart
 ```
 
-(A proper tap is on the roadmap; this URL form works until then.)
+or in one step:
+
+```sh
+brew install visigoth/rampart/rampart
+```
+
+The tap lives at [github.com/visigoth/homebrew-rampart](https://github.com/visigoth/homebrew-rampart);
+brew strips the `homebrew-` prefix automatically.
 
 ### One-line installer
 
