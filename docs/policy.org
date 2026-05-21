@@ -34,16 +34,18 @@ agent.
 Three search scopes, indexed in this order. Lower-priority entries are
 overwritten by higher-priority ones with the same name:
 
-1. *Global* — =/opt/shaheengandhi/share/rampart/= (the bundled library,
-   populated by =just install=) with =~/.local/share/rampart/= layered on
-   top as a user-managed override.
+1. *Global* — =<prefix>/share/rampart/= (the bundled library, populated
+   by whichever installer placed the rampart binary on disk: Homebrew
+   under =$(brew --prefix)=, the bash installer or =just install= under
+   =~/.local= by default). =~/.local/share/rampart/= layers on top as
+   a user-managed override; when the install prefix *is* =~/.local=
+   the two paths are the same directory.
    - =agents.hcl= — multi-agent file
    - =agents/<name>.hcl= — single-agent files (one =agent= block per file)
-   - The install share dir is populated by whichever installer placed
-     the rampart binary on disk (Homebrew, the bash installer, or
-     =just install= for local dev), sourced from the repo's =assets/=
-     tree. The user override dir is never touched by rampart; files
-     there shadow same-named files in the install share dir.
+   - The install share dir is sourced from the repo's =assets/= tree.
+     The user override dir is never touched by rampart; files there
+     shadow same-named files in the install share dir whenever the two
+     are distinct directories.
 2. *Repo-wide* — =<git-root>/.rampart/=
    - =agents.hcl= and =agents/<name>.hcl= — agent overrides shared
      across the repo
@@ -289,8 +291,9 @@ A module file is a top-level HCL body (no wrapping =module= block —
 the file's path under its search root /is/ the module name):
 
 #+begin_src hcl
-# /opt/shaheengandhi/share/rampart/modules/lang/python.hcl
-# (or ~/.local/share/rampart/modules/lang/python.hcl as a user override)
+# ~/.local/share/rampart/modules/lang/python.hcl
+# (the install share dir for the default ~/.local prefix; also where
+#  user overrides live)
 
 variable "venv" {
   type        = string
@@ -329,8 +332,10 @@ network {
 
 1. =<git-root>/.rampart/modules/<path>.hcl=
 2. =~/.local/share/rampart/modules/<path>.hcl= (user overrides)
-3. =/opt/shaheengandhi/share/rampart/modules/<path>.hcl= (bundled library,
-   populated by the installer)
+3. =<prefix>/share/rampart/modules/<path>.hcl= (bundled library,
+   populated by the installer; =<prefix>= is =~/.local= by default,
+   =$(brew --prefix)= for Homebrew installs, or whatever you passed
+   to =--prefix= / =RAMPART_PREFIX=)
 
 The repo-local path wins so a project can override or fork a global
 module. Resolution failure produces a diagnostic at the =use= block's
@@ -360,11 +365,16 @@ naming each link.
 
 Installing rampart (via Homebrew, the bash installer, or =just install=
 for local dev) lays down a curated module library at
-=/opt/shaheengandhi/share/rampart/modules/= or =$(brew --prefix)/share/rampart/modules/=
-sourced from the repo's =assets/modules/= tree. The install dir is
-managed by the installer — your edits belong in
-=~/.local/share/rampart/modules/= (user override layer, never touched
-by rampart) or in =<git-root>/.rampart/modules/= (repo-local).
+=<prefix>/share/rampart/modules/= — =~/.local/share/rampart/modules/=
+on the default user install, =$(brew --prefix)/share/rampart/modules/=
+on Homebrew. The install dir is managed by the installer.
+
+For installs whose prefix is *not* =~/.local=, your hand edits belong
+in =~/.local/share/rampart/modules/= (user override layer, never
+touched by rampart) or in =<git-root>/.rampart/modules/= (repo-local).
+For the default =~/.local= install the user-override layer collapses
+into the install dir; durable customizations should go in
+=<git-root>/.rampart/modules/= or be re-applied after each reinstall.
 
 | Module           | Purpose                                                   |
 |------------------+-----------------------------------------------------------|

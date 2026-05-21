@@ -35,15 +35,24 @@ rampart:
 just install
 #+end_src
 
-This builds, code-signs (use the "Rampart Local Dev" identity if
-present, ad-hoc signing otherwise), and installs to:
+By default this builds, code-signs (use the "Rampart Local Dev"
+identity if present, ad-hoc signing otherwise), and installs to
+=$HOME/.local= (the XDG user-install prefix, on =PATH= by default on
+most modern distros, no sudo required):
 
-- =/opt/shaheengandhi/bin/rampart= (binary)
-- =/opt/shaheengandhi/share/man/man1/rampart.1= (man page)
-- =/opt/shaheengandhi/share/{zsh,bash-completion}/...= (completions)
+- =~/.local/bin/rampart= (binary)
+- =~/.local/share/man/man1/rampart.1= (man page)
+- =~/.local/share/{zsh,bash-completion}/...= (completions)
 - =$HOME/.config/fish/completions/rampart.fish=
-- =/opt/shaheengandhi/share/rampart/{agents,modules}/= — the bundled
-  agent + module library, copied from the repo's =assets/= tree
+- =~/.local/share/rampart/{agents,modules}/= — the bundled agent +
+  module library, copied from the repo's =assets/= tree
+
+Override the prefix with =RAMPART_PREFIX=:
+
+#+begin_src sh
+RAMPART_PREFIX=/usr/local             just install
+RAMPART_PREFIX=/opt/shaheengandhi sudo --preserve-env=RAMPART_PREFIX just install
+#+end_src
 
 A self-signed code-signing identity is recommended on macOS so rebuilds
 keep a stable signature. Without it the MITM CA's Keychain ACLs reset
@@ -72,12 +81,19 @@ on-disk layers, searched in this order at runtime:
 1. *User override* — =~/.local/share/rampart/{agents,modules}/=. Files
    you drop here shadow same-named files in the install share dir.
    Rampart never writes to this directory.
-2. *Install share dir* — =/opt/shaheengandhi/share/rampart/{agents,modules}/=
-   (or =$(brew --prefix)/share/rampart/= on Homebrew installs). Populated
-   by whichever installer placed the rampart binary on disk. Treated as
-   read-only by the running binary. The runtime location is computed
-   from the binary's own path at =<exe-dir>/../share/rampart=; set
-   =$RAMPART_SHARE_DIR= to override.
+2. *Install share dir* — =<prefix>/share/rampart/{agents,modules}/=,
+   where =<prefix>= is whatever directory holds the rampart binary's
+   parent. Populated by whichever installer placed the rampart binary
+   on disk. Treated as read-only by the running binary. The runtime
+   location is computed from the binary's own path at
+   =<exe-dir>/../share/rampart=; set =$RAMPART_SHARE_DIR= to override.
+
+For the default =~/.local= install the user-override layer and the
+install share dir are the *same* directory. The two layers only
+diverge when you install with a different prefix (Homebrew, =/usr/local=,
+=/opt/shaheengandhi=, …) — in those cases hand edits at
+=~/.local/share/rampart/= remain a stable, installer-untouched override
+location and survive every reinstall.
 
 rampart does *not* ship an embedded fallback library — the binary is
 not usable for the bundled =coding= / =planning= / =reviewing= agents
@@ -94,13 +110,13 @@ format, search-path resolution, and the bundled module catalog.
 
 Rampart reads policy from three scopes, lowest to highest priority:
 
-| Scope         | Location                                                 | Purpose                                    |
-|---------------+----------------------------------------------------------+--------------------------------------------|
-| Global        | =/opt/shaheengandhi/share/rampart/agents/*.hcl=          | Bundled agents installed by =just install= |
-| User override | =~/.local/share/rampart/agents/*.hcl=                    | User-managed agents that shadow Global     |
-| Repo-wide     | =<git-root>/.rampart/agents.hcl=, =/agents/=             | Repo-shared agent overrides                |
-| Project       | =<git-root>/.rampart/profiles/<project>/=                | Project-specific profile (and agents)      |
-| Defaults      | =<git-root>/.rampart/defaults.hcl=                       | Selects the default agent and profile      |
+| Scope         | Location                                                 | Purpose                                                                                       |
+|---------------+----------------------------------------------------------+-----------------------------------------------------------------------------------------------|
+| Global        | =<prefix>/share/rampart/agents/*.hcl=                    | Bundled agents installed by the installer (=~/.local= by default; Homebrew uses its own prefix) |
+| User override | =~/.local/share/rampart/agents/*.hcl=                    | User-managed agents that shadow Global (same dir as Global when prefix is =~/.local=)         |
+| Repo-wide     | =<git-root>/.rampart/agents.hcl=, =/agents/=             | Repo-shared agent overrides                                                                   |
+| Project       | =<git-root>/.rampart/profiles/<project>/=                | Project-specific profile (and agents)                                                         |
+| Defaults      | =<git-root>/.rampart/defaults.hcl=                       | Selects the default agent and profile                                                         |
 
 Agent-vs-profile split:
 - *Agent* declares what an AI tool /requests/ — abstract filesystem and

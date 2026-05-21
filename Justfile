@@ -14,7 +14,10 @@
 # Without the cert, install falls back to adhoc signing (-) and Keychain
 # will prompt on each rebuild's first MITM CA access.
 
-local_prefix := "/opt/shaheengandhi"
+# Default install prefix is ~/.local so `just install` doesn't need
+# sudo and respects the XDG user-install convention. Override with
+# `RAMPART_PREFIX=/opt/whatever just install`.
+local_prefix := env_var_or_default("RAMPART_PREFIX", env_var("HOME") + "/.local")
 local_bin_dir := local_prefix + "/bin"
 local_share_dir := local_prefix + "/share"
 signing_identity := "Rampart Local Dev"
@@ -32,8 +35,8 @@ build:
     mkdir -p .build/rampart
     # -X main.installShareDir overrides the runtime relative-to-executable
     # lookup so a binary invoked from .build/rampart/ (not the installed
-    # location) still finds its library at /opt/shaheengandhi/share/rampart.
-    # Installed binaries don't need this — they discover the share dir via
+    # location) still finds its library at <prefix>/share/rampart. Installed
+    # binaries don't need this — they discover the share dir via
     # <exe-dir>/../share/rampart automatically.
     go build \
         -ldflags="-X main.installShareDir=${install_share_dir} -linkmode external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,${plist_path}" \
@@ -59,7 +62,10 @@ test:
     fi
 
 # Install rampart binary, man page, completions, and bundled library
-# (agents + modules) under /opt/shaheengandhi.
+# (agents + modules) under ~/.local (or $RAMPART_PREFIX if set).
+# User-writable prefix, so no sudo unless someone points RAMPART_PREFIX
+# at a system path — in which case they can sudo the just call:
+#   sudo --preserve-env=RAMPART_PREFIX just install
 install: build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -77,35 +83,37 @@ install: build
         --identifier com.shaheengandhi.rampart \
         --force \
         "${binary}"
-    sudo install -d {{ local_bin_dir }}
-    sudo install -m 0755 "${binary}" {{ local_bin_dir }}/rampart
-    sudo install -d {{ local_share_dir }}/man/man1
+    install -d {{ local_bin_dir }}
+    install -m 0755 "${binary}" {{ local_bin_dir }}/rampart
+    install -d {{ local_share_dir }}/man/man1
     "${binary}" docs man --output-dir /tmp/rampart-man
-    sudo install -m 0644 /tmp/rampart-man/rampart.1 {{ local_share_dir }}/man/man1/rampart.1
+    install -m 0644 /tmp/rampart-man/rampart.1 {{ local_share_dir }}/man/man1/rampart.1
     rm -rf /tmp/rampart-man
-    sudo install -d {{ local_share_dir }}/zsh/site-functions
-    "${binary}" completion zsh | sudo tee {{ local_share_dir }}/zsh/site-functions/_rampart >/dev/null
-    sudo install -d {{ local_share_dir }}/bash-completion/completions
-    "${binary}" completion bash | sudo tee {{ local_share_dir }}/bash-completion/completions/rampart >/dev/null
+    install -d {{ local_share_dir }}/zsh/site-functions
+    "${binary}" completion zsh > {{ local_share_dir }}/zsh/site-functions/_rampart
+    install -d {{ local_share_dir }}/bash-completion/completions
+    "${binary}" completion bash > {{ local_share_dir }}/bash-completion/completions/rampart
     mkdir -p "${HOME}/.config/fish/completions"
     "${binary}" completion fish > "${HOME}/.config/fish/completions/rampart.fish"
     # Install the bundled rampart library (agents + modules) to the
     # canonical share dir. The binary discovers this directory via its
-    # own path: /opt/shaheengandhi/bin/rampart looks up the tree at
+    # own path: <prefix>/bin/rampart looks up the tree at
     # ../share/rampart automatically.
     #
-    # ~/.local/share/rampart/ is reserved for content the USER manages
-    # themselves — drop a module there to shadow the bundled copy of
-    # the same name. Rampart never writes to that user directory.
+    # If you install to a prefix OTHER than ~/.local, then
+    # ~/.local/share/rampart/ remains a separate user-managed override
+    # layer that rampart never writes to. With the default ~/.local
+    # prefix the two collapse — your edits live alongside the bundled
+    # library and get overwritten on the next `just install`.
     library_src="$(pwd)/cmd/rampart/assets"
     install_share="{{ local_share_dir }}/rampart"
     for sub in agents modules; do
         if [ -d "${library_src}/${sub}" ]; then
-            sudo rm -rf "${install_share}/${sub}"
-            sudo install -d "${install_share}/${sub}"
+            rm -rf "${install_share}/${sub}"
+            install -d "${install_share}/${sub}"
             while IFS= read -r f; do
-                sudo install -d "${install_share}/${sub}/$(dirname "$f")"
-                sudo install -m 0644 "${library_src}/${sub}/$f" "${install_share}/${sub}/$f"
+                install -d "${install_share}/${sub}/$(dirname "$f")"
+                install -m 0644 "${library_src}/${sub}/$f" "${install_share}/${sub}/$f"
             done < <(cd "${library_src}/${sub}" && find . -type f -name '*.hcl' | sed 's|^\./||')
             count=$(find "${library_src}/${sub}" -type f -name '*.hcl' | wc -l | tr -d ' ')
             echo "Installed: ${install_share}/${sub}/ (${count} files)"

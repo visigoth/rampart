@@ -33,22 +33,23 @@ brew strips the `homebrew-` prefix automatically.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/visigoth/rampart/main/install.sh | bash
-# or, pin a version and prefix:
+# or, pin a version and/or change the prefix:
 curl -fsSL https://raw.githubusercontent.com/visigoth/rampart/main/install.sh | bash -s -- \
-    --version v0.1.0 --prefix /opt/shaheengandhi
+    --version v0.1.0 --prefix /usr/local
 ```
 
 The script downloads the matching tarball from GitHub Releases, verifies
 its sha256, and extracts a prefix-style layout (`bin/rampart`,
 `share/man/man1/rampart.1`, `share/rampart/{agents,modules}/`) into the
-chosen prefix.
+chosen prefix. Default prefix is `~/.local`, which is user-writable and
+on `PATH` by default on most modern distros — no sudo needed.
 
 ### From source
 
 ```sh
 just build         # build into .build/rampart/rampart
 just test          # run unit + contract tests
-just install       # codesign + install to /opt/shaheengandhi
+just install       # codesign + install to ~/.local (override via $RAMPART_PREFIX)
 ```
 
 A self-signed code-signing identity named `Rampart Local Dev` is
@@ -63,16 +64,32 @@ Whichever install channel you use, the binary lands at
 discovers the library by walking back from its own path
 (`<exe-dir>/../share/rampart`), so:
 
+- bash installer / `just install` (default prefix) → `~/.local/bin/rampart` + `~/.local/share/rampart/...`
 - Homebrew → `$(brew --prefix)/bin/rampart` + `$(brew --prefix)/share/rampart/...`
-- bash installer (default prefix) → `/opt/shaheengandhi/bin/rampart` + `/opt/shaheengandhi/share/rampart/...`
-- `just install` → same as the bash installer
-- `RAMPART_SHARE_DIR=/wherever` overrides the lookup for tests or
-  bespoke layouts
+- `RAMPART_PREFIX=/opt/shaheengandhi just install` → system-wide
+- `RAMPART_SHARE_DIR=/wherever` overrides the runtime lookup for tests
+  or bespoke layouts
 
-`~/.local/share/rampart/{agents,modules}/` is a user-managed override
-layer — anything you drop there shadows the same-named bundled file.
-Rampart never writes to this directory, so your overrides survive
-reinstalls and upgrades.
+### User override layer
+
+`~/.local/share/rampart/{agents,modules}/` is also the canonical place
+for user-managed overrides — drop a same-named file there and the
+registry picks it up before the bundled copy.
+
+For installs whose prefix is *not* `~/.local` (Homebrew, `/usr/local`,
+`/opt/shaheengandhi`), the user-override layer is genuinely separate
+from the install share dir, and your edits there survive every
+reinstall and upgrade.
+
+For installs whose prefix *is* `~/.local` (the default for `just
+install` and the bash installer), the user-override layer and the
+install share dir are the same directory. Your hand edits live
+alongside the bundled library — and get overwritten the next time
+`just install` or the bash installer wipes-and-repopulates that tree.
+For durable customizations under this layout, keep your overrides
+under `<git-root>/.rampart/{agents,modules}/` (repo-local, wins over
+both global tiers) or in a personal dotfiles repo you re-symlink after
+each install.
 
 There is no embedded fallback library in the binary: if no install
 share dir is present, the bundled agents and modules genuinely don't

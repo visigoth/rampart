@@ -3,7 +3,7 @@
 # it into a Unix prefix. Intended for use as:
 #
 #   curl -fsSL https://raw.githubusercontent.com/visigoth/rampart/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/visigoth/rampart/main/install.sh | bash -s -- --prefix /opt/shaheengandhi
+#   curl -fsSL https://raw.githubusercontent.com/visigoth/rampart/main/install.sh | bash -s -- --prefix ~/.local
 #
 # Or download and inspect first:
 #
@@ -26,12 +26,16 @@
 # The binary discovers its bundled library via <exe-dir>/../share/rampart,
 # so as long as bin/ and share/ end up siblings under PREFIX, no env var
 # is needed.
+#
+# Default prefix is ~/.local — user-writable, on PATH by default on most
+# modern distros, no sudo required. Override with --prefix to install
+# system-wide.
 
 set -euo pipefail
 
 OWNER="visigoth"
 REPO="rampart"
-PREFIX="/opt/shaheengandhi"
+PREFIX="${HOME}/.local"
 VERSION=""
 USE_SUDO="auto"
 
@@ -39,9 +43,10 @@ usage() {
     cat <<'USAGE'
 Usage: install.sh [--prefix DIR] [--version vX.Y.Z] [--no-sudo]
 
-  --prefix DIR     Install prefix (default: /opt/shaheengandhi).
+  --prefix DIR     Install prefix (default: ~/.local).
                    The tarball is laid out so bin/, share/man/, and
                    share/rampart/ all land directly under this dir.
+                   Common alternatives: /opt/shaheengandhi, /usr/local.
   --version vX.Y.Z Install a specific release tag (default: latest).
   --no-sudo        Don't elevate to root even if the prefix isn't writable
                    by the current user. Useful when running as root
