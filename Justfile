@@ -121,19 +121,29 @@ install: build
     done
     echo "Installed: {{ local_bin_dir }}/rampart"
 
-# Cut a release for darwin/arm64. Bumps cmd/rampart/VERSION, tags
-# vX.Y.Z, builds a prefix-style tarball, pushes the tag, and creates a
-# GitHub release with the tarball attached.
+# Cut a release. Bumps cmd/rampart/VERSION, tags vX.Y.Z, builds a
+# prefix-style tarball for every supported target, pushes the tag, and
+# creates a GitHub release with the tarballs attached.
+#
+# Targets:
+#   - darwin/arm64 — native macOS build (codesigned with Rampart Local
+#     Dev if present, ad-hoc otherwise).
+#   - linux/amd64  — built via `podman run` against
+#     docker.io/library/golang with libseccomp-dev installed. Built on
+#     macOS hosts; skipped on Linux hosts that produce their native
+#     binary in the darwin step's place.
 #
 # Usage:
 #   just release 1.0.0
 #   just release 1.0.0-rc1
 #
+# Idempotent: re-running with the same VERSION when the tag already
+# exists rebuilds artifacts and upserts the GitHub release (useful when
+# the gh release step failed on a previous attempt).
+#
 # Requires: gh CLI authenticated against github.com/visigoth/rampart,
-# a clean working tree on main, and (optionally) the "Rampart Local Dev"
-# signing identity in Keychain. Without that identity the released binary
-# is ad-hoc signed, which is enough for local execution and Homebrew
-# builds-from-source but means downloaded binaries will fail Gatekeeper.
+# podman on macOS hosts, and (optionally) the "Rampart Local Dev"
+# signing identity in Keychain.
 release VERSION:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -143,61 +153,161 @@ release VERSION:
         exit 1
     fi
     tag="v${version}"
-    if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
-        echo "release: tag ${tag} already exists" >&2
-        exit 1
-    fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-        echo "release: working tree is dirty; commit or stash first" >&2
-        exit 1
-    fi
-    branch="$(git rev-parse --abbrev-ref HEAD)"
-    if [[ "${branch}" != "main" ]]; then
-        echo "release: must be on main (currently on ${branch})" >&2
-        exit 1
-    fi
+    host_os="$(uname | tr '[:upper:]' '[:lower:]')"
+
     if ! command -v gh >/dev/null 2>&1; then
         echo "release: gh CLI is required (https://cli.github.com)" >&2
         exit 1
+    fi
+    if [[ "${host_os}" == "darwin" ]] && ! command -v podman >/dev/null 2>&1; then
+        echo "release: podman is required on macOS hosts (for the linux build)" >&2
+        exit 1
+    fi
+
+    tag_exists="no"
+    if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+        tag_exists="yes"
+        echo "==> tag ${tag} already exists; skipping bump+tag, rebuilding artifacts"
+    else
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "release: working tree is dirty; commit or stash first" >&2
+            exit 1
+        fi
+        branch="$(git rev-parse --abbrev-ref HEAD)"
+        if [[ "${branch}" != "main" ]]; then
+            echo "release: must be on main (currently on ${branch})" >&2
+            exit 1
+        fi
     fi
 
     echo "==> running tests"
     just test
 
-    echo "==> bumping VERSION to ${version}"
-    printf '%s' "${version}" > cmd/rampart/VERSION
-    git add cmd/rampart/VERSION
-    if ! git diff --cached --quiet; then
-        git commit -m "release: ${tag}"
+    if [[ "${tag_exists}" == "no" ]]; then
+        echo "==> bumping VERSION to ${version}"
+        printf '%s' "${version}" > cmd/rampart/VERSION
+        git add cmd/rampart/VERSION
+        if ! git diff --cached --quiet; then
+            git commit -m "release: ${tag}"
+        fi
+        git tag -a "${tag}" -m "rampart ${tag}"
     fi
-    git tag -a "${tag}" -m "rampart ${tag}"
 
-    echo "==> building release binary"
-    just build
-    binary=".build/rampart/rampart"
-
-    # Sign with the local dev identity if available; ad-hoc otherwise.
-    if security find-identity -v -p codesigning 2>/dev/null | grep -q "{{ signing_identity }}"; then
-        identity="{{ signing_identity }}"
-    else
-        identity="-"
-        echo "release: WARNING — '{{ signing_identity }}' not in Keychain; using ad-hoc signature"
-    fi
-    codesign --sign "${identity}" \
-        --identifier com.shaheengandhi.rampart \
-        --force "${binary}"
-
-    echo "==> assembling tarball"
+    # Always start with a clean dist/release/ so stale per-target dirs
+    # from previous runs don't sneak into the tarball list passed to
+    # gh upload.
     rm -rf dist/release
-    arch="$(uname -m)"
-    case "${arch}" in
-        arm64|aarch64) goarch="arm64" ;;
-        x86_64|amd64)  goarch="amd64" ;;
-        *) echo "release: unsupported arch ${arch}" >&2; exit 1 ;;
-    esac
-    os="$(uname | tr '[:upper:]' '[:lower:]')"
-    payload_name="rampart-${version}-${os}-${goarch}"
+    mkdir -p dist/release
+
+    # ---- darwin/arm64 (native on macOS, skipped elsewhere) ----
+    darwin_tarball=""
+    darwin_sha=""
+    if [[ "${host_os}" == "darwin" ]]; then
+        echo "==> building darwin/arm64 binary"
+        just build
+        binary=".build/rampart/rampart"
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "{{ signing_identity }}"; then
+            identity="{{ signing_identity }}"
+        else
+            identity="-"
+            echo "release: WARNING — '{{ signing_identity }}' not in Keychain; using ad-hoc signature"
+        fi
+        codesign --sign "${identity}" \
+            --identifier com.shaheengandhi.rampart \
+            --force "${binary}"
+        just _release-pack "${version}" darwin arm64 "${binary}"
+        darwin_tarball="dist/release/rampart-${version}-darwin-arm64.tar.gz"
+        darwin_sha="${darwin_tarball}.sha256"
+    fi
+
+    # ---- linux/amd64 (via podman on macOS, native on Linux) ----
+    linux_tarball=""
+    linux_sha=""
+    linux_arch="amd64"
+    if [[ "${host_os}" == "darwin" ]]; then
+        echo "==> building linux/${linux_arch} binary in a podman container"
+        rm -rf .build/rampart-linux-${linux_arch}
+        mkdir -p .build/rampart-linux-${linux_arch}
+        # Vanilla golang image + apt-get libseccomp-dev so we don't need
+        # a custom builder image. -s/-w strip the symbol table for a
+        # smaller binary. CGO_ENABLED=1 is implicit (default for the
+        # golang image) and required for libseccomp.
+        podman run --rm \
+            --platform "linux/${linux_arch}" \
+            -v "$(pwd):/src" \
+            -w /src \
+            docker.io/library/golang:1.26-bookworm \
+            bash -c "
+                set -euo pipefail
+                apt-get update -qq
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libseccomp-dev >/dev/null
+                go build -ldflags='-s -w' -o .build/rampart-linux-${linux_arch}/rampart ./cmd/rampart
+            "
+        linux_binary=".build/rampart-linux-${linux_arch}/rampart"
+        just _release-pack "${version}" linux "${linux_arch}" "${linux_binary}"
+        linux_tarball="dist/release/rampart-${version}-linux-${linux_arch}.tar.gz"
+        linux_sha="${linux_tarball}.sha256"
+    elif [[ "${host_os}" == "linux" ]]; then
+        echo "==> building linux/${linux_arch} binary natively"
+        rm -rf .build/rampart-linux-${linux_arch}
+        mkdir -p .build/rampart-linux-${linux_arch}
+        CGO_ENABLED=1 go build -ldflags='-s -w' -o .build/rampart-linux-${linux_arch}/rampart ./cmd/rampart
+        linux_binary=".build/rampart-linux-${linux_arch}/rampart"
+        just _release-pack "${version}" linux "${linux_arch}" "${linux_binary}"
+        linux_tarball="dist/release/rampart-${version}-linux-${linux_arch}.tar.gz"
+        linux_sha="${linux_tarball}.sha256"
+    fi
+
+    assets=()
+    [[ -n "${darwin_tarball}" ]] && assets+=("${darwin_tarball}" "${darwin_sha}")
+    [[ -n "${linux_tarball}" ]] && assets+=("${linux_tarball}" "${linux_sha}")
+
+    echo "==> pushing tag to origin"
+    git push origin main
+    git push origin "${tag}" || echo "    (tag already on origin)"
+
+    echo "==> creating / updating GitHub release"
+    if gh release view "${tag}" >/dev/null 2>&1; then
+        gh release upload "${tag}" --clobber "${assets[@]}"
+    else
+        gh release create "${tag}" \
+            --title "rampart ${tag}" \
+            --notes "Release ${tag}. See CHANGELOG.md or the commit log for details." \
+            "${assets[@]}"
+    fi
+
+    echo
+    echo "Released ${tag}."
+    for asset in "${assets[@]}"; do
+        case "${asset}" in
+            *.tar.gz) echo "  $(shasum -a 256 "${asset}" | awk '{print $1}')  ${asset}" ;;
+        esac
+    done
+    echo
+    echo "Next: bump the tap formula in the homebrew-rampart repo."
+    echo "  url     https://github.com/visigoth/rampart/archive/refs/tags/${tag}.tar.gz"
+    echo "  sha256  $(curl -fsSL https://github.com/visigoth/rampart/archive/refs/tags/${tag}.tar.gz 2>/dev/null | shasum -a 256 | awk '{print \$1}')"
+    echo "  version ${version}"
+
+# Internal: assemble a prefix-style tarball for a single target.
+# Args: VERSION, GOOS, GOARCH, PATH-to-built-binary.
+# Writes dist/release/rampart-VERSION-GOOS-GOARCH.tar.gz + .sha256.
+# Uses the host-native rampart binary (.build/rampart/rampart) to
+# regenerate the man page and shell completions — those outputs are
+# platform-agnostic text so a darwin binary's output is fine to ship
+# inside a linux tarball.
+[private]
+_release-pack version goos goarch binary:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version="{{ version }}"
+    goos="{{ goos }}"
+    goarch="{{ goarch }}"
+    binary="{{ binary }}"
+
+    payload_name="rampart-${version}-${goos}-${goarch}"
     payload="dist/release/${payload_name}"
+    rm -rf "${payload}"
     mkdir -p "${payload}/bin" \
              "${payload}/share/man/man1" \
              "${payload}/share/zsh/site-functions" \
@@ -205,52 +315,32 @@ release VERSION:
              "${payload}/share/fish/vendor_completions.d" \
              "${payload}/share/rampart"
 
-    cp "${binary}" "${payload}/bin/rampart"
-    chmod 0755 "${payload}/bin/rampart"
+    install -m 0755 "${binary}" "${payload}/bin/rampart"
 
-    "${binary}" docs man --output-dir "${payload}/share/man/man1"
-    "${binary}" completion zsh  > "${payload}/share/zsh/site-functions/_rampart"
-    "${binary}" completion bash > "${payload}/share/bash-completion/completions/rampart"
-    "${binary}" completion fish > "${payload}/share/fish/vendor_completions.d/rampart.fish"
+    # Run the host-native binary (.build/rampart/rampart) to produce
+    # the man page and shell completions. These outputs are pure text
+    # and identical across targets, so we don't need to run the linux
+    # binary on macOS.
+    host_binary=".build/rampart/rampart"
+    "${host_binary}" docs man --output-dir "${payload}/share/man/man1"
+    "${host_binary}" completion zsh  > "${payload}/share/zsh/site-functions/_rampart"
+    "${host_binary}" completion bash > "${payload}/share/bash-completion/completions/rampart"
+    "${host_binary}" completion fish > "${payload}/share/fish/vendor_completions.d/rampart.fish"
 
-    # Copy the bundled library straight from source. Tarball install:
-    # extract into <prefix>/, and the binary's relative-to-executable
-    # lookup finds <prefix>/share/rampart/{agents,modules}/.
     rsync -a --include='*/' --include='*.hcl' --exclude='*' \
         cmd/rampart/assets/agents/ "${payload}/share/rampart/agents/"
     rsync -a --include='*/' --include='*.hcl' --exclude='*' \
         cmd/rampart/assets/modules/ "${payload}/share/rampart/modules/"
 
     cp README.md "${payload}/README.md"
-    if [ -f LICENSE ]; then
-        cp LICENSE "${payload}/LICENSE"
-    fi
+    [[ -f LICENSE ]] && cp LICENSE "${payload}/LICENSE" || true
 
     tarball="dist/release/${payload_name}.tar.gz"
     (cd dist/release && tar -czf "${payload_name}.tar.gz" "${payload_name}")
     sha256="$(shasum -a 256 "${tarball}" | awk '{print $1}')"
-    echo "==> ${tarball}"
-    echo "    sha256: ${sha256}"
-    echo "${sha256}  ${payload_name}.tar.gz" > "dist/release/${payload_name}.tar.gz.sha256"
-
-    echo "==> pushing tag to origin"
-    git push origin main
-    git push origin "${tag}"
-
-    echo "==> creating GitHub release"
-    gh release create "${tag}" \
-        --title "rampart ${tag}" \
-        --notes "Release ${tag}. See CHANGELOG.md or the commit log for details." \
-        "${tarball}" \
-        "dist/release/${payload_name}.tar.gz.sha256"
-
-    echo
-    echo "Released ${tag}. Tarball at ${tarball} (sha256 ${sha256})."
-    echo
-    echo "Next: bump the tap formula in the homebrew-rampart repo."
-    echo "  url     https://github.com/visigoth/rampart/archive/refs/tags/${tag}.tar.gz"
-    echo "  sha256  $(curl -fsSL https://github.com/visigoth/rampart/archive/refs/tags/${tag}.tar.gz 2>/dev/null | shasum -a 256 | awk '{print \$1}')"
-    echo "  version ${version}"
+    echo "${sha256}  ${payload_name}.tar.gz" > "${tarball}.sha256"
+    echo "    ${tarball}"
+    echo "      sha256: ${sha256}"
 
 # Tidy go module dependencies.
 tidy:
