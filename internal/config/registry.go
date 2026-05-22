@@ -17,9 +17,10 @@ import (
 //      (typically ~/.local/share/rampart/) — rampart never writes here;
 //      this is where the user puts custom or override modules
 //   3. System-installed       remaining globalDirs entries, e.g.
-//      /opt/shaheengandhi/share/rampart/ — the canonical install
-//      location for the rampart-shipped library, populated by the
-//      installer (Homebrew, the bash installer, or `just install`).
+//      <prefix>/share/rampart/ — the canonical install location for
+//      the rampart-shipped library, populated by whichever installer
+//      placed the binary on disk (Homebrew, the bash installer, or
+//      `just install`).
 //
 // rampart no longer ships an embedded fallback library. If none of the
 // global dirs hold the agent/module the caller asked for, resolution
@@ -54,7 +55,7 @@ func NewRegistry(gitRoot, globalDir string) (*Registry, error) {
 //
 //	dirs := []string{
 //	    "~/.local/share/rampart",                    // user overrides
-//	    "/opt/shaheengandhi/share/rampart",          // install share dir
+//	    "<prefix>/share/rampart",                    // install share dir
 //	}
 func NewRegistryFromDirs(gitRoot string, globalDirs []string) (*Registry, error) {
 	r := &Registry{

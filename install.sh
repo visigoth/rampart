@@ -46,7 +46,7 @@ Usage: install.sh [--prefix DIR] [--version vX.Y.Z] [--no-sudo]
   --prefix DIR     Install prefix (default: ~/.local).
                    The tarball is laid out so bin/, share/man/, and
                    share/rampart/ all land directly under this dir.
-                   Common alternatives: /opt/shaheengandhi, /usr/local.
+                   Common alternative: /usr/local (requires sudo).
   --version vX.Y.Z Install a specific release tag (default: latest).
   --no-sudo        Don't elevate to root even if the prefix isn't writable
                    by the current user. Useful when running as root

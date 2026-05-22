@@ -50,8 +50,7 @@ most modern distros, no sudo required):
 Override the prefix with =RAMPART_PREFIX=:
 
 #+begin_src sh
-RAMPART_PREFIX=/usr/local             just install
-RAMPART_PREFIX=/opt/shaheengandhi sudo --preserve-env=RAMPART_PREFIX just install
+RAMPART_PREFIX=/usr/local      sudo --preserve-env=RAMPART_PREFIX just install
 #+end_src
 
 A self-signed code-signing identity is recommended on macOS so rebuilds
@@ -91,7 +90,7 @@ on-disk layers, searched in this order at runtime:
 For the default =~/.local= install the user-override layer and the
 install share dir are the *same* directory. The two layers only
 diverge when you install with a different prefix (Homebrew, =/usr/local=,
-=/opt/shaheengandhi=, …) — in those cases hand edits at
+or any other =RAMPART_PREFIX=) — in those cases hand edits at
 =~/.local/share/rampart/= remain a stable, installer-untouched override
 location and survive every reinstall.
 

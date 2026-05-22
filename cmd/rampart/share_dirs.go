@@ -24,8 +24,8 @@ var installShareDir = ""
 //  2. Relative to the running binary: <exe-dir>/../share/rampart. This
 //     is the Unix prefix convention and covers every supported install
 //     path — Homebrew (/opt/homebrew or /usr/local), the bundled bash
-//     installer (/opt/shaheengandhi by default), and `just install`
-//     during local development.
+//     installer (~/.local by default), and `just install` during local
+//     development.
 //  3. The build-time installShareDir ldflag, if set.
 //
 // Returns "" if none of the above produce a path. Callers tolerate an
@@ -64,7 +64,7 @@ func resolveInstallShareDir() string {
 //     manages themselves; an agent or module here shadows the
 //     install-share-dir copy with the same name. Rampart never writes
 //     to this directory.
-//  2. Install share dir — e.g. /opt/shaheengandhi/share/rampart or
+//  2. Install share dir — e.g. ~/.local/share/rampart or
 //     $(brew --prefix)/share/rampart, populated by whichever install
 //     channel placed the binary on disk.
 //

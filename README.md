@@ -66,7 +66,7 @@ discovers the library by walking back from its own path
 
 - bash installer / `just install` (default prefix) → `~/.local/bin/rampart` + `~/.local/share/rampart/...`
 - Homebrew → `$(brew --prefix)/bin/rampart` + `$(brew --prefix)/share/rampart/...`
-- `RAMPART_PREFIX=/opt/shaheengandhi just install` → system-wide
+- `RAMPART_PREFIX=/usr/local just install` → system-wide
 - `RAMPART_SHARE_DIR=/wherever` overrides the runtime lookup for tests
   or bespoke layouts
 
@@ -77,9 +77,9 @@ for user-managed overrides — drop a same-named file there and the
 registry picks it up before the bundled copy.
 
 For installs whose prefix is *not* `~/.local` (Homebrew, `/usr/local`,
-`/opt/shaheengandhi`), the user-override layer is genuinely separate
-from the install share dir, and your edits there survive every
-reinstall and upgrade.
+or any other directory you pass via `RAMPART_PREFIX`), the user-override
+layer is genuinely separate from the install share dir, and your edits
+there survive every reinstall and upgrade.
 
 For installs whose prefix *is* `~/.local` (the default for `just
 install` and the bash installer), the user-override layer and the
