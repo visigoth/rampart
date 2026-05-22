@@ -339,9 +339,7 @@ network {
 
 The repo-local path wins so a project can override or fork a global
 module. Resolution failure produces a diagnostic at the =use= block's
-source range listing the paths it tried — there is no embedded
-fallback, so a module that hasn't been installed to one of the three
-locations above is genuinely unresolvable.
+source range listing the paths it tried.
 
 ** Variable scoping
 

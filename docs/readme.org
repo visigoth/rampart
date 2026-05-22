@@ -94,13 +94,6 @@ or any other =RAMPART_PREFIX=) — in those cases hand edits at
 =~/.local/share/rampart/= remain a stable, installer-untouched override
 location and survive every reinstall.
 
-rampart does *not* ship an embedded fallback library — the binary is
-not usable for the bundled =coding= / =planning= / =reviewing= agents
-without one of the install channels (Homebrew, the bash installer, or
-=just install= for local dev) populating the install share dir. The
-trade-off: users can inspect, edit, and reason about the bundled HCL
-files on disk instead of having them invisibly baked into the binary.
-
 The module library is the recommended way to compose project policies —
 see [[file:policy.org::*Modules][Modules]] in policy.org for the file
 format, search-path resolution, and the bundled module catalog.
