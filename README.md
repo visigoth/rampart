@@ -91,12 +91,6 @@ under `<git-root>/.rampart/{agents,modules}/` (repo-local, wins over
 both global tiers) or in a personal dotfiles repo you re-symlink after
 each install.
 
-There is no embedded fallback library in the binary: if no install
-share dir is present, the bundled agents and modules genuinely don't
-exist for that run. This is a deliberate trade — having the HCL files
-on disk means you can read them, grep them, and copy from them when
-authoring your own.
-
 ## Probing a policy
 
 ```sh
