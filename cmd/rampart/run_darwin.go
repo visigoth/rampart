@@ -53,7 +53,7 @@ func buildSandboxedCmd(cp *compiledPolicy, flags *runFlags, args []string, workd
 	cmdArgs = append(cmdArgs, targetArgs...)
 
 	cmd := exec.Command("/usr/bin/sandbox-exec", cmdArgs...)
-	cmd.Env = BuildEnv(flags.envVars, flags.noEnv)
+	cmd.Env = BuildEnv(cp.Policy, flags.envVars, flags.noEnv)
 	cmd.Dir = workdir
 	return cmd, nil
 }

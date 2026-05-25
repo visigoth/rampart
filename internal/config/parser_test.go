@@ -487,3 +487,78 @@ agent "bad" {
 		t.Fatal("expected error for mixed segment in path rule")
 	}
 }
+
+// --- env passthrough validation ---
+
+func TestParseAgentFile_EnvLiteralValid(t *testing.T) {
+	src := []byte(`
+agent "good" {
+  filesystem   = "none"
+  network_mode = "none"
+  env          = ["EDITOR", "PATH", "LC_*", "XDG_*"]
+}
+`)
+	agents, err := ParseAgentFile("test.hcl", src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(agents[0].Env) != 4 {
+		t.Errorf("expected 4 env entries, got %v", agents[0].Env)
+	}
+}
+
+func TestParseAgentFile_EnvBareWildcardRejected(t *testing.T) {
+	src := []byte(`
+agent "bad" {
+  filesystem   = "none"
+  network_mode = "none"
+  env          = ["*"]
+}
+`)
+	_, err := ParseAgentFile("test.hcl", src)
+	if err == nil {
+		t.Fatal("expected error for bare wildcard in env")
+	}
+}
+
+func TestParseAgentFile_EnvLeadingWildcardRejected(t *testing.T) {
+	src := []byte(`
+agent "bad" {
+  filesystem   = "none"
+  network_mode = "none"
+  env          = ["*_EDITOR"]
+}
+`)
+	_, err := ParseAgentFile("test.hcl", src)
+	if err == nil {
+		t.Fatal("expected error for leading wildcard in env")
+	}
+}
+
+func TestParseAgentFile_EnvMidStarRejected(t *testing.T) {
+	src := []byte(`
+agent "bad" {
+  filesystem   = "none"
+  network_mode = "none"
+  env          = ["LC_*_EXTRA"]
+}
+`)
+	_, err := ParseAgentFile("test.hcl", src)
+	if err == nil {
+		t.Fatal("expected error for mid-string wildcard in env")
+	}
+}
+
+func TestParseAgentFile_EnvInvalidNameRejected(t *testing.T) {
+	src := []byte(`
+agent "bad" {
+  filesystem   = "none"
+  network_mode = "none"
+  env          = ["1BAD"]
+}
+`)
+	_, err := ParseAgentFile("test.hcl", src)
+	if err == nil {
+		t.Fatal("expected error for env name starting with digit")
+	}
+}

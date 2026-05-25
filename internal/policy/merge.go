@@ -3,6 +3,7 @@ package policy
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/visigoth/rampart/internal/config"
@@ -38,6 +39,7 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 		NoTLSMITM:       profile.NoTLSMITM,
 		CLIExtraPaths:   append([]string(nil), opts.ExtraPaths...),
 		CLIExtraDomains: append([]string(nil), opts.ExtraDomains...),
+		CLIExtraEnv:     append([]string(nil), opts.ExtraEnv...),
 	}
 	if opts.NoTLSMITM != nil {
 		rp.NoTLSMITM = *opts.NoTLSMITM
@@ -55,7 +57,13 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 	profileReadGrants := dedupe(append(append(append([]string(nil), profile.Read...), profile.Write...), profile.Exec...))
 	rp.Read = intersectFilesystemPaths(agent.Read, profileReadGrants, agent.Filesystem, "read-only")
 	rp.Write = intersectFilesystemPaths(agent.Write, profile.Write, agent.Filesystem, "read-write")
-	rp.Exec = intersectFilesystemPaths(agent.Exec, profile.Exec, agent.Filesystem, "read-write")
+	// Exec: split off ${VAR} placeholders — they get resolved against
+	// the parent env at launch time by ResolveExecEnvRefs and then
+	// coverage-checked against profile.Exec.
+	execLiterals, execPlaceholders := splitExecEnvPlaceholders(agent.Exec)
+	rp.Exec = intersectFilesystemPaths(execLiterals, profile.Exec, agent.Filesystem, "read-write")
+	rp.execPlaceholders = execPlaceholders
+	rp.profileExecGrants = append([]string(nil), profile.Exec...)
 
 	// --- Network: profile is sole runtime authority (TR16) ---
 	profileNetMode := inferProfileNetworkMode(profile)
@@ -65,6 +73,9 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 	}
 	rp.AllowedDomains = append([]string(nil), profile.AllowedDomains...)
 	rp.UnixSockets = append([]string(nil), profile.UnixSockets...)
+
+	// --- Env passthrough: agent⇄profile intersection with glob matching ---
+	rp.Env = intersectEnvPatterns(agent.Env, profile.Env)
 
 	// --- Compile-time validation ---
 	warnings, err := validateAgentVsProfile(agent, profile, opts.Strict)
@@ -306,6 +317,11 @@ func validateAgentVsProfile(agent *config.AgentConfig, profile *config.ProfileCo
 		}
 	}
 	for _, p := range agent.Exec {
+		if execEnvPlaceholderRegex.MatchString(p) {
+			// ${VAR} placeholders are coverage-checked at resolution
+			// time (when we know the literal value), not here.
+			continue
+		}
 		if !isCoveredByAny(p, profile.Exec) {
 			warn("agent %q requests exec access to %q but profile %q does not grant it",
 				agent.Name, p, profile.Name)
@@ -319,6 +335,22 @@ func validateAgentVsProfile(agent *config.AgentConfig, profile *config.ProfileCo
 				warn("agent %q requests access to domain %q but profile %q does not grant it",
 					agent.Name, d.Pattern, profile.Name)
 			}
+		}
+	}
+
+	// Validate env: every var referenced in agent.Exec via ${VAR} must
+	// appear in agent.Env, and the agent's Env requests must be permitted
+	// by profile.Env. Two failure modes, distinct messages.
+	for _, ref := range referencedEnvVars(agent.Exec) {
+		if !envPatternListMatches(agent.Env, ref) {
+			warn("agent %q exec entry references ${%s} but %s is not declared in agent env",
+				agent.Name, ref, ref)
+		}
+	}
+	for _, e := range agent.Env {
+		if !envPatternListCovers(profile.Env, e) {
+			warn("agent %q requests env passthrough for %q but profile %q does not grant it",
+				agent.Name, e, profile.Name)
 		}
 	}
 
@@ -373,4 +405,134 @@ func domainCovers(grant, request string) bool {
 		return strings.HasSuffix(request, suffix)
 	}
 	return false
+}
+
+// envPatternRegex matches a `${VAR}` reference in an exec entry. VAR
+// must follow shell conventions: start with letter or underscore,
+// continue with letters/digits/underscores.
+var envPatternRegex = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// execEnvPlaceholderRegex matches an exec entry whose entire value
+// is a single `${VAR}` reference. The ResolveExecEnvRefs step
+// recognises these as deferred lookups; everything else is a literal
+// path that flows through path intersection at merge time.
+var execEnvPlaceholderRegex = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// splitExecEnvPlaceholders separates literal exec entries from
+// `${VAR}` placeholders, preserving order within each bucket.
+func splitExecEnvPlaceholders(execEntries []string) (literals, placeholders []string) {
+	for _, e := range execEntries {
+		if execEnvPlaceholderRegex.MatchString(e) {
+			placeholders = append(placeholders, e)
+		} else {
+			literals = append(literals, e)
+		}
+	}
+	return
+}
+
+// referencedEnvVars returns the deduplicated names of env vars
+// referenced via ${VAR} in any of the given exec entries. Preserves
+// first-occurrence order so warning output is deterministic.
+func referencedEnvVars(execEntries []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, entry := range execEntries {
+		for _, match := range envPatternRegex.FindAllStringSubmatch(entry, -1) {
+			name := match[1]
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// envPatternListMatches reports whether some pattern in `patterns`
+// matches the concrete env-var name `name`. Used for "is this VAR
+// declared in agent.Env" checks.
+func envPatternListMatches(patterns []string, name string) bool {
+	for _, p := range patterns {
+		if envPatternMatches(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// envPatternListCovers reports whether some pattern in `grants`
+// covers the request pattern `req`. "Cover" means: every concrete
+// var name that matches `req` would also match the grant. The two
+// directions used here:
+//   - exact equality of patterns ("EDITOR" covers "EDITOR";
+//     "LC_*" covers "LC_*");
+//   - a grant glob covers a more-specific request: "LC_*" covers
+//     "LC_ALL"; "LC_*" covers "LC_TIME_*" (because every name
+//     matching the request would also match the grant).
+func envPatternListCovers(grants []string, req string) bool {
+	for _, g := range grants {
+		if envPatternCovers(g, req) {
+			return true
+		}
+	}
+	return false
+}
+
+// envPatternMatches reports whether a concrete env-var `name` matches
+// `pattern`. Env names are flat; the grammar is "exact literal" or
+// "literal prefix followed by trailing `*`" (e.g. "LC_*" matches any
+// name starting with "LC_"). The validator at parse time guarantees
+// this shape.
+func envPatternMatches(pattern, name string) bool {
+	if pattern == name {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		prefix := pattern[:len(pattern)-1]
+		return strings.HasPrefix(name, prefix)
+	}
+	return false
+}
+
+// envPatternCovers reports whether grant-pattern `g` covers
+// request-pattern `r`. Both may be literal or `PREFIX*` form.
+func envPatternCovers(g, r string) bool {
+	if g == r {
+		return true
+	}
+	gIsGlob := strings.HasSuffix(g, "*")
+	rIsGlob := strings.HasSuffix(r, "*")
+	switch {
+	case !rIsGlob:
+		// Literal request: grant must match it directly.
+		return envPatternMatches(g, r)
+	case gIsGlob:
+		// Both globs: grant covers request iff grant's prefix is a
+		// prefix of request's prefix ("LC_*" covers "LC_T*").
+		return strings.HasPrefix(r[:len(r)-1], g[:len(g)-1])
+	default:
+		// Glob request, literal grant: not covered — the request is
+		// broader than the grant.
+		return false
+	}
+}
+
+// intersectEnvPatterns returns the set intersection of two env pattern
+// lists with glob coverage semantics. An agent pattern is kept iff it
+// is covered by some profile pattern; a profile glob that matches an
+// agent literal is kept under the agent's literal form (more specific
+// representation wins).
+func intersectEnvPatterns(agentPatterns, profilePatterns []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range agentPatterns {
+		if envPatternListCovers(profilePatterns, a) {
+			if !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+	return out
 }

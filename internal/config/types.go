@@ -14,6 +14,12 @@ type AgentConfig struct {
 	Exec        []string        `hcl:"exec,optional"`
 	NetworkMode string          `hcl:"network_mode,attr"`
 	Domains     []string        `hcl:"domains,optional"`
+	// Env lists environment variables the agent requests be passed
+	// through from the parent process. Glob form `LC_*` matches by
+	// prefix on the `_` separator. The merged policy keeps only the
+	// vars the profile also permits. Vars referenced as `${VAR}` in
+	// Exec must appear here (warning at parse, error with --strict).
+	Env         []string        `hcl:"env,optional"`
 	Network     *NetworkConfig  `hcl:"network,block"`
 	Remain      hcl.Body        `hcl:",remain"`
 
@@ -50,6 +56,11 @@ type ProfileConfig struct {
 	// CONNECT time, but path rules are not enforced for HTTPS (HTTP is
 	// unaffected). When true, no MITM CA is required at runtime.
 	NoTLSMITM      bool            `hcl:"no_tls_mitm,optional"`
+	// Env lists environment variables the profile permits the
+	// sandboxed process to inherit from the parent. Glob form `LC_*`
+	// matches by prefix on the `_` separator. Intersected with the
+	// agent's Env at merge time.
+	Env            []string        `hcl:"env,optional"`
 	Network        *NetworkConfig  `hcl:"network,block"`
 	Remain         hcl.Body        `hcl:",remain"`
 

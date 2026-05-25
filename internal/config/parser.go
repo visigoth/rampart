@@ -145,6 +145,9 @@ func validateAgentConfig(a *AgentConfig, path string) error {
 	if err := validateDomainGlobs(a.Domains, path, "agent", a.Name, "domains"); err != nil {
 		return err
 	}
+	if err := validateEnvGlobs(a.Env, path, "agent", a.Name, "env"); err != nil {
+		return err
+	}
 	if a.Network != nil {
 		if err := validateNetworkConfig(a.Network, path, "agent", a.Name); err != nil {
 			return err
@@ -177,6 +180,9 @@ func validateProfileConfig(p *ProfileConfig, path string) error {
 		return err
 	}
 	if err := validateDomainGlobs(p.MitmDomains, path, "profile", p.Name, "mitm_domains"); err != nil {
+		return err
+	}
+	if err := validateEnvGlobs(p.Env, path, "profile", p.Name, "env"); err != nil {
 		return err
 	}
 	if p.Network != nil {
@@ -219,6 +225,72 @@ func validateDomainGlobs(domains []string, file, kind, name, field string) error
 		}
 	}
 	return nil
+}
+
+// validateEnvGlobs validates env-var passthrough patterns. Env names
+// are flat (a `_` is part of the name, not a meaningful separator),
+// so the supported forms are minimal:
+//
+//   - "EDITOR"   — exact name match.
+//   - "LC_*"     — prefix match: trailing `*` only, with a non-empty
+//                  literal prefix.
+//
+// A bare wildcard, leading wildcard, or anything fancier is rejected
+// so the env surface stays auditable.
+func validateEnvGlobs(names []string, file, kind, name, field string) error {
+	for _, n := range names {
+		if n == "" {
+			return fmt.Errorf("%s: %s %q: %s: empty env pattern", file, kind, name, field)
+		}
+		if strings.ContainsAny(n, "?{}[]") {
+			return fmt.Errorf("%s: %s %q: %s: pattern %q contains unsupported wildcards", file, kind, name, field, n)
+		}
+		starIdx := strings.IndexByte(n, '*')
+		if starIdx < 0 {
+			// Pure literal — must look like a valid env var name.
+			if !isValidEnvName(n) {
+				return fmt.Errorf("%s: %s %q: %s: %q is not a valid env-var name", file, kind, name, field, n)
+			}
+			continue
+		}
+		// Globbed — must be trailing `*` only, with a non-empty prefix.
+		if starIdx == 0 {
+			return fmt.Errorf("%s: %s %q: %s: pattern %q has no literal prefix; use PREFIX_* form", file, kind, name, field, n)
+		}
+		if starIdx != len(n)-1 {
+			return fmt.Errorf("%s: %s %q: %s: pattern %q must end in `*`; only trailing wildcards are supported", file, kind, name, field, n)
+		}
+		prefix := n[:starIdx]
+		if !isValidEnvName(prefix) {
+			return fmt.Errorf("%s: %s %q: %s: prefix %q in pattern %q is not a valid env-var name", file, kind, name, field, prefix, n)
+		}
+	}
+	return nil
+}
+
+// isValidEnvName reports whether s could be a real env-var name —
+// starts with letter or underscore, continues with letters, digits,
+// or underscores. POSIX conventionally uses uppercase, but
+// `_special` and lowercase names are also valid environment names
+// in practice, so we accept the broader character set.
+func isValidEnvName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_':
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validateNetworkConfig(nc *NetworkConfig, file, kind, name string) error {

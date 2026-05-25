@@ -57,6 +57,11 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 		return nil, fmt.Errorf("compiling policy: %w", err)
 	}
 
+	// Expand ${VAR} placeholders in rp.Exec to concrete absolute paths.
+	// Must run before resolvePolicyPaths so the post-expansion strings
+	// flow through the normal path normalizer.
+	policy.ResolveExecEnvRefs(rp)
+
 	// Resolve all paths in the policy: ~/foo → $HOME/foo, "." → gitRoot,
 	// other relative paths → gitRoot/<path>, absolute paths unchanged.
 	// Symlinks are resolved as far as the filesystem allows. This must
@@ -183,6 +188,22 @@ func printHumanReadable(cp *compiledPolicy, out io.Writer) {
 		fmt.Fprintln(out, "extra domains:  [source: CLI --allow-domain]")
 		for _, d := range rp.CLIExtraDomains {
 			fmt.Fprintf(out, "  %s\n", d)
+		}
+	}
+
+	if len(rp.Env) > 0 || len(rp.CLIExtraEnv) > 0 {
+		fmt.Fprintln(out, "\n--- env passthrough ---")
+		if len(rp.Env) > 0 {
+			fmt.Fprintln(out, "patterns:  [source: policy intersection]")
+			for _, e := range rp.Env {
+				fmt.Fprintf(out, "  %s\n", e)
+			}
+		}
+		if len(rp.CLIExtraEnv) > 0 {
+			fmt.Fprintln(out, "extra:  [source: CLI --env]")
+			for _, e := range rp.CLIExtraEnv {
+				fmt.Fprintf(out, "  %s\n", e)
+			}
 		}
 	}
 

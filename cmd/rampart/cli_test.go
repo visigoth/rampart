@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/visigoth/rampart/internal/policy"
 )
 
 // --- Flag parsing ---
@@ -374,13 +376,18 @@ func TestDetectMode_String(t *testing.T) {
 
 // --- BuildEnv ---
 
-func TestBuildEnv_BuiltinsAlwaysPresent(t *testing.T) {
-	// Ensure PATH is in the environment so it's picked up.
+// policyWithEnv returns a ResolvedPolicy whose Env list is the
+// argument. Used to exercise BuildEnv's pattern-matching path.
+func policyWithEnv(patterns ...string) *policy.ResolvedPolicy {
+	return &policy.ResolvedPolicy{Env: patterns}
+}
+
+func TestBuildEnv_PolicyPatternsPassThrough(t *testing.T) {
 	if os.Getenv("PATH") == "" {
 		os.Setenv("PATH", "/usr/bin:/bin")
 	}
 
-	env := BuildEnv(nil, false)
+	env := BuildEnv(policyWithEnv("PATH"), nil, false)
 
 	hasPath := false
 	for _, kv := range env {
@@ -389,23 +396,53 @@ func TestBuildEnv_BuiltinsAlwaysPresent(t *testing.T) {
 		}
 	}
 	if !hasPath {
-		t.Error("PATH should always be in env list")
+		t.Error("PATH should pass through when listed in policy.Env")
 	}
 }
 
-func TestBuildEnv_NoEnv_OnlyBuiltins(t *testing.T) {
-	extraVars := []string{"SECRET=value", "MY_CUSTOM_VAR=foo"}
-	env := BuildEnv(extraVars, true) // --no-env
+func TestBuildEnv_DropsUnlistedVars(t *testing.T) {
+	os.Setenv("RAMPART_SHOULD_NOT_PASS", "x")
+	defer os.Unsetenv("RAMPART_SHOULD_NOT_PASS")
+
+	env := BuildEnv(policyWithEnv("PATH"), nil, false)
 
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "SECRET=") || strings.HasPrefix(kv, "MY_CUSTOM_VAR=") {
-			t.Errorf("--no-env: unexpected custom var in env: %q", kv)
+		if strings.HasPrefix(kv, "RAMPART_SHOULD_NOT_PASS=") {
+			t.Errorf("unlisted var leaked into env: %q", kv)
 		}
 	}
 }
 
-func TestBuildEnv_ExtraVars_Added(t *testing.T) {
-	env := BuildEnv([]string{"CUSTOM_VAR=hello"}, false)
+func TestBuildEnv_GlobMatchesLCStar(t *testing.T) {
+	os.Setenv("LC_TEST_VAR", "v")
+	defer os.Unsetenv("LC_TEST_VAR")
+
+	env := BuildEnv(policyWithEnv("LC_*"), nil, false)
+
+	found := false
+	for _, kv := range env {
+		if kv == "LC_TEST_VAR=v" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("LC_TEST_VAR should match LC_* pattern")
+	}
+}
+
+func TestBuildEnv_NoEnv_DropsCLIExtras(t *testing.T) {
+	extraVars := []string{"SECRET=value", "MY_CUSTOM_VAR=foo"}
+	env := BuildEnv(policyWithEnv("PATH"), extraVars, true) // --no-env
+
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "SECRET=") || strings.HasPrefix(kv, "MY_CUSTOM_VAR=") {
+			t.Errorf("--no-env: CLI --env extras should be dropped: %q", kv)
+		}
+	}
+}
+
+func TestBuildEnv_ExtraVarsBypassPolicy(t *testing.T) {
+	env := BuildEnv(policyWithEnv("PATH"), []string{"CUSTOM_VAR=hello"}, false)
 
 	found := false
 	for _, kv := range env {
@@ -414,13 +451,15 @@ func TestBuildEnv_ExtraVars_Added(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("--env CUSTOM_VAR=hello not found in env list")
+		t.Error("--env CUSTOM_VAR=hello should pass through even when not in policy.Env")
 	}
 }
 
 func TestBuildEnv_NoDuplicates(t *testing.T) {
-	// PATH is likely set from builtins; adding it again via --env should not duplicate.
-	env := BuildEnv([]string{"PATH=/custom/path"}, false)
+	if os.Getenv("PATH") == "" {
+		os.Setenv("PATH", "/usr/bin:/bin")
+	}
+	env := BuildEnv(policyWithEnv("PATH"), []string{"PATH=/custom/path"}, false)
 
 	count := 0
 	for _, kv := range env {
@@ -433,11 +472,11 @@ func TestBuildEnv_NoDuplicates(t *testing.T) {
 	}
 }
 
-func TestBuildEnv_EnvVarWithoutValue_LookupFromProcess(t *testing.T) {
+func TestBuildEnv_NameOnlyExtraVar_LookupFromProcess(t *testing.T) {
 	os.Setenv("RAMPART_TEST_VAR", "exists")
 	defer os.Unsetenv("RAMPART_TEST_VAR")
 
-	env := BuildEnv([]string{"RAMPART_TEST_VAR"}, false)
+	env := BuildEnv(policyWithEnv(), []string{"RAMPART_TEST_VAR"}, false)
 
 	found := false
 	for _, kv := range env {
@@ -446,7 +485,7 @@ func TestBuildEnv_EnvVarWithoutValue_LookupFromProcess(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("env var without value should be looked up from process env")
+		t.Error("name-only --env entry should look up value from process env")
 	}
 }
 

@@ -61,10 +61,24 @@ func attachRunFlags(cmd *cobra.Command) *runFlags {
 
 // toMergeOptions converts CLI flags to a policy.MergeOptions.
 func (f *runFlags) toMergeOptions() policy.MergeOptions {
+	// --env entries may be VAR or VAR=value. The merge layer cares about
+	// the name half (for intersection); the value half stays with the
+	// envVars slice and is consumed verbatim by BuildEnv.
+	extraEnvNames := make([]string, 0, len(f.envVars))
+	for _, spec := range f.envVars {
+		name := spec
+		if i := strings.IndexByte(spec, '='); i >= 0 {
+			name = spec[:i]
+		}
+		if name != "" {
+			extraEnvNames = append(extraEnvNames, name)
+		}
+	}
 	opts := policy.MergeOptions{
 		Mode:         f.mode,
 		ExtraPaths:   f.extraPaths,
 		ExtraDomains: f.extraDomains,
+		ExtraEnv:     extraEnvNames,
 		Strict:       f.strict,
 	}
 	// Only forward --no-tls-mitm when it was explicitly passed; an unpassed
@@ -136,38 +150,29 @@ func isTTY(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// builtinEnvVars is the minimal env set always passed to the sandboxed process
-// regardless of --no-env (TR41). LC_* is handled by prefix match.
+// BuildEnv builds the environment variable list for the sandboxed
+// process from the resolved policy's Env patterns plus the CLI's
+// --env additions. Every concrete VAR=value in the result must match
+// at least one pattern in either set (no implicit passthrough).
 //
-// SSH_AUTH_SOCK is included because ssh-agent integration is a
-// pervasive expectation — every ssh-using profile (1Password agent,
-// gpg-agent, system ssh-agent) sets it in the user's shell and expects
-// ssh to pick it up. Sandbox enforcement of the agent socket file
-// itself is at the filesystem layer (tooling/op-ssh grants
-// read+write); leaking just the path string is harmless.
-var builtinEnvVars = []string{
-	"PATH", "HOME", "USER", "TERM", "LANG", "SHELL", "TMPDIR",
-	"XDG_RUNTIME_DIR", "XDG_CACHE_HOME",
-	"SSH_AUTH_SOCK",
-}
-
-// BuildEnv builds the environment variable list for the sandboxed process
-// given the current process environment and CLI flags.
+// Patterns may be literal names ("EDITOR") or globs ("LC_*"); globs
+// are expanded against os.Environ() at call time. The --env flag may
+// pass either VAR or VAR=value:
+//   - VAR        → look up the value in the parent env and pass it.
+//   - VAR=value  → use the given value verbatim.
 //
-// In --no-env mode: only built-ins + LC_* vars are passed.
-// In default mode: built-ins + user vars from envVars flag are added.
-func BuildEnv(envVars []string, noEnv bool) []string {
+// --no-env strips the --env additions only; policy.Env still applies,
+// since the agent and profile authored those declarations.
+func BuildEnv(rp *policy.ResolvedPolicy, envVars []string, noEnv bool) []string {
 	var result []string
-
-	// Always include built-in vars from the current process.
-	for _, key := range builtinEnvVars {
-		if val, ok := os.LookupEnv(key); ok {
-			result = append(result, key+"="+val)
-		}
-	}
-	// Always include LC_* locale vars.
+	patterns := append([]string(nil), rp.Env...)
+	patterns = append(patterns, rp.CLIExtraEnv...)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "LC_") {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			name = kv[:i]
+		}
+		if envNameMatchesAny(name, patterns) {
 			result = append(result, kv)
 		}
 	}
@@ -176,18 +181,36 @@ func BuildEnv(envVars []string, noEnv bool) []string {
 		return dedupEnv(result)
 	}
 
-	// Append any --env additions.
+	// --env additions: VAR=value entries override; VAR entries pull
+	// from the parent process env. These bypass the pattern match
+	// (the CLI knob is the explicit override).
 	for _, spec := range envVars {
 		if strings.Contains(spec, "=") {
 			result = append(result, spec)
-		} else {
-			if val, ok := os.LookupEnv(spec); ok {
-				result = append(result, spec+"="+val)
-			}
+			continue
+		}
+		if val, ok := os.LookupEnv(spec); ok {
+			result = append(result, spec+"="+val)
 		}
 	}
 
 	return dedupEnv(result)
+}
+
+// envNameMatchesAny reports whether a concrete env-var name matches
+// any pattern in the list. Patterns are either a literal name
+// ("EDITOR") or a trailing-`*` prefix glob ("LC_*"). Mirrors
+// policy.envPatternMatches but stays in the cmd/rampart package.
+func envNameMatchesAny(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if p == name {
+			return true
+		}
+		if strings.HasSuffix(p, "*") && strings.HasPrefix(name, p[:len(p)-1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupEnv removes duplicate VAR= entries, keeping last occurrence.

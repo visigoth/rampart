@@ -41,12 +41,34 @@ type ResolvedPolicy struct {
 	// overridden by MergeOptions.NoTLSMITM (CLI --no-tls-mitm).
 	NoTLSMITM bool
 
+	// Env is the resolved set of env-var name patterns the sandboxed
+	// process may inherit. Intersection of agent.Env and profile.Env
+	// (with glob matching), plus CLIExtraEnv. The CLI's BuildEnv reads
+	// this set — anything outside is dropped from the child env. Glob
+	// entries like "LC_*" survive verbatim; expansion to concrete var
+	// names happens against the current process env.
+	Env []string
+
 	// CLI augmentations: bypass intersection (FR17).
 	CLIExtraPaths   []string
 	CLIExtraDomains []string
+	CLIExtraEnv     []string
 
 	// Warnings produced during compile-time validation.
 	Warnings []string
+
+	// execPlaceholders carries the `${VAR}` entries pulled out of the
+	// agent's exec list during MergePolicy. ResolveExecEnvRefs reads
+	// them, looks up the env vars at launch, runs LookPath, and folds
+	// the resolved absolute paths into Exec (subject to a coverage
+	// check against profileExecGrants).
+	execPlaceholders []string
+
+	// profileExecGrants is the profile's raw exec grant list, kept
+	// around so ResolveExecEnvRefs can coverage-check resolved
+	// placeholder paths against the same prefix-match rule used by
+	// the rest of the intersection logic.
+	profileExecGrants []string
 }
 
 // MergeOptions carries CLI overrides applied after intersection.
@@ -60,6 +82,11 @@ type MergeOptions struct {
 
 	// ExtraDomains are added to the policy unconditionally (--allow-domain).
 	ExtraDomains []string
+
+	// ExtraEnv adds env-var passthrough names unconditionally (--env).
+	// Bypasses the agent⇄profile intersection; the resolver and BuildEnv
+	// honour these alongside the intersected Env set.
+	ExtraEnv []string
 
 	// Strict causes compile-time validation mismatches to be errors instead of warnings.
 	Strict bool
