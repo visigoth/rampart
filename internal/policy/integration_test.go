@@ -56,10 +56,9 @@ func TestMergePolicy_Integration(t *testing.T) {
 			name: "01_coding_agent_read_write_full_overlap",
 			agentHCL: `
 agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
-  read  = ["/home/user/code"]
-  write = ["/home/user/code", "/tmp"]
+  read    = ["/home/user/code"]
+  write   = ["/home/user/code", "/tmp"]
+  domains = ["api.anthropic.com"]
 }`,
 			profileHCL: `
 profile "default" {
@@ -77,8 +76,6 @@ profile "default" {
 			name: "02_profile_restricts_filesystem_mode",
 			agentHCL: `
 agent "coder" {
-  filesystem   = "read-write"
-  network_mode = "none"
   write = ["/home/user/project"]
 }`,
 			profileHCL: `
@@ -96,8 +93,6 @@ profile "readonly-sandbox" {
 			name: "03_capability_hierarchy_write_grants_read",
 			agentHCL: `
 agent "builder" {
-  filesystem   = "read-write"
-  network_mode = "none"
   read  = ["/build/output"]
   write = ["/build/output"]
 }`,
@@ -115,8 +110,6 @@ profile "ci" {
 			name: "04_capability_hierarchy_exec_grants_read_not_write",
 			agentHCL: `
 agent "runner" {
-  filesystem   = "read-write"
-  network_mode = "none"
   read  = ["/usr/bin/node"]
   write = ["/usr/bin/node"]
   exec  = ["/usr/bin/node"]
@@ -132,18 +125,18 @@ profile "nodejs" {
 			wantExec:  []string{"/usr/bin/node"},
 		},
 		{
-			name: "05_abstract_agent_inherits_profile_paths",
+			name: "05_broad_agent_request_inherits_profile_paths",
 			agentHCL: `
 agent "analyst" {
-  filesystem   = "read-only"
-  network_mode = "none"
+  read = ["/"]
 }`,
 			profileHCL: `
 profile "analytics" {
   workdir = "/data"
   read    = ["/data/raw", "/data/processed"]
 }`,
-			// abstract agent (no concrete paths) → inherits all profile read paths
+			// Agent asks broadly ("/" covers everything); intersection
+			// returns the profile's more-specific grants.
 			wantFS:   "read-only",
 			wantRead: []string{"/data/raw", "/data/processed"},
 		},
@@ -151,8 +144,6 @@ profile "analytics" {
 			name: "06_no_overlap_in_paths",
 			agentHCL: `
 agent "sre" {
-  filesystem   = "read-write"
-  network_mode = "none"
   read  = ["/etc/nginx"]
   write = ["/etc/nginx"]
 }`,
@@ -170,8 +161,6 @@ profile "app-sandbox" {
 			name: "07_network_profile_sole_authority",
 			agentHCL: `
 agent "browser" {
-  filesystem   = "none"
-  network_mode = "full"
   domains      = ["*.example.com", "api.github.com"]
 }`,
 			profileHCL: `
@@ -189,8 +178,6 @@ profile "restricted-net" {
 			name: "08_agent_none_blocks_network",
 			agentHCL: `
 agent "isolated" {
-  filesystem   = "none"
-  network_mode = "none"
 }`,
 			profileHCL: `
 profile "open-net" {
@@ -204,8 +191,6 @@ profile "open-net" {
 			name: "10_cli_extra_paths_bypass_intersection",
 			agentHCL: `
 agent "debug" {
-  filesystem   = "read-only"
-  network_mode = "none"
 }`,
 			profileHCL: `
 profile "sandbox" {
@@ -222,8 +207,6 @@ profile "sandbox" {
 			name: "11_strict_mode_unsatisfied_request_errors",
 			agentHCL: `
 agent "eager" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
   write = ["/etc/passwd"]
   domains = ["*.evil.com"]
 }`,
@@ -239,8 +222,6 @@ profile "strict-sandbox" {
 			name: "12_non_strict_unsatisfied_produces_warnings",
 			agentHCL: `
 agent "eager" {
-  filesystem   = "read-write"
-  network_mode = "none"
   write = ["/etc/passwd"]
 }`,
 			profileHCL: `
@@ -254,8 +235,6 @@ profile "sandbox" {
 			name: "13_workdir_preserved_from_profile",
 			agentHCL: `
 agent "dev" {
-  filesystem   = "read-only"
-  network_mode = "none"
 }`,
 			profileHCL: `
 profile "project" {
@@ -267,8 +246,6 @@ profile "project" {
 			name: "14_agent_broader_path_gets_profile_specific",
 			agentHCL: `
 agent "explorer" {
-  filesystem   = "read-write"
-  network_mode = "none"
   read  = ["/home"]
   write = ["/home"]
 }`,
@@ -286,8 +263,6 @@ profile "single-user" {
 			name: "15_permissive_mode_from_cli",
 			agentHCL: `
 agent "dev" {
-  filesystem   = "none"
-  network_mode = "none"
 }`,
 			profileHCL: `
 profile "sandbox" {
@@ -460,12 +435,16 @@ func TestMergePolicy_CapabilityHierarchy_TableDriven(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &config.AgentConfig{
-				Name:        "test-agent",
-				Filesystem:  "read-write",
-				NetworkMode: "none",
-				Read:        tc.agentRead,
-				Write:       tc.agentWrite,
-				Exec:        tc.agentExec,
+				Name:  "test-agent",
+				Read:  tc.agentRead,
+				Write: tc.agentWrite,
+				Exec:  tc.agentExec,
+			}
+			// Inject a marker write so cases that test read-only
+			// behaviour with no agent declarations still infer the
+			// read-write filesystem mode this test bench expects.
+			if len(a.Write) == 0 && len(a.Exec) == 0 {
+				a.Write = []string{"/__fs_marker"}
 			}
 			p := &config.ProfileConfig{
 				Name:    "test-profile",
@@ -508,8 +487,6 @@ func TestMergePolicy_ValidationWarnings(t *testing.T) {
 			name: "read_not_granted_warns",
 			agentHCL: `
 agent "a" {
-  filesystem   = "read-only"
-  network_mode = "none"
   read         = ["/secret"]
 }`,
 			profileHCL: `
@@ -523,8 +500,6 @@ profile "p" {
 			name: "write_not_granted_warns",
 			agentHCL: `
 agent "a" {
-  filesystem   = "read-write"
-  network_mode = "none"
   write        = ["/etc/passwd"]
 }`,
 			profileHCL: `
@@ -538,8 +513,6 @@ profile "p" {
 			name: "exec_not_granted_warns",
 			agentHCL: `
 agent "a" {
-  filesystem   = "read-write"
-  network_mode = "none"
   exec         = ["/usr/sbin/useradd"]
 }`,
 			profileHCL: `
@@ -553,8 +526,6 @@ profile "p" {
 			name: "all_satisfied_no_warnings",
 			agentHCL: `
 agent "a" {
-  filesystem   = "read-write"
-  network_mode = "none"
   read         = ["/app"]
   write        = ["/app/logs"]
   exec         = ["/usr/bin/node"]
@@ -572,8 +543,6 @@ profile "p" {
 			name: "strict_read_not_granted_errors",
 			agentHCL: `
 agent "a" {
-  filesystem   = "read-only"
-  network_mode = "none"
   read         = ["/secret"]
 }`,
 			profileHCL: `
@@ -589,8 +558,6 @@ profile "p" {
 			name: "domain_not_granted_warns",
 			agentHCL: `
 agent "a" {
-  filesystem   = "none"
-  network_mode = "filtered"
   network {
     domain "private.corp" {}
   }

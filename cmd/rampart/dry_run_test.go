@@ -246,8 +246,6 @@ defaults {
 `)
 	write(filepath.Join(r, "agents.hcl"), `
 agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
 }
 `)
 	write(filepath.Join(r, "profiles", "testproj", "default.hcl"), `
@@ -324,8 +322,6 @@ func TestRunDryRun_ExitZeroOnSuccess(t *testing.T) {
 	r := filepath.Join(gitDir, ".rampart")
 	write(filepath.Join(r, "agents.hcl"), `
 agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "none"
 }
 `)
 	write(filepath.Join(r, "profiles", "p", "default.hcl"), `
@@ -358,8 +354,6 @@ func TestRootCmd_DryRunFlag_UsesRunDryRun(t *testing.T) {
 	r := filepath.Join(gitDir, ".rampart")
 	write(filepath.Join(r, "agents.hcl"), `
 agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "none"
 }
 `)
 	write(filepath.Join(r, "profiles", "myp", "default.hcl"), `

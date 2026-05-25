@@ -9,12 +9,37 @@ import (
 
 // --- helpers ---
 
+// agent constructs an AgentConfig whose declarations yield the
+// requested filesystem and network modes via inference. The legacy
+// (filesystem, networkMode) parameters predate the schema cleanup
+// that dropped those attributes; the helper preserves call-site
+// ergonomics by translating each mode into a broad declaration:
+//
+//   - filesystem "read-only"  → Read = ["/"]   (broad ask; intersection
+//                                              with profile picks up
+//                                              the profile's grants)
+//   - filesystem "read-write" → Write = ["/"]
+//   - network "filtered"      → Domains = [marker hostname]
+//   - network "full"          → Domains = ["*"]
+//
+// Test bodies that override these via agentWith()'s modifier will
+// replace the marker — fine, since mode inference re-runs against
+// the resulting slice.
 func agent(name, filesystem, networkMode string) *config.AgentConfig {
-	return &config.AgentConfig{
-		Name:        name,
-		Filesystem:  filesystem,
-		NetworkMode: networkMode,
+	a := &config.AgentConfig{Name: name}
+	switch filesystem {
+	case "read-only":
+		a.Read = []string{"/"}
+	case "read-write":
+		a.Write = []string{"/"}
 	}
+	switch networkMode {
+	case "filtered":
+		a.Domains = []string{"net.example.test"}
+	case "full":
+		a.Domains = []string{"*"}
+	}
+	return a
 }
 
 func agentWith(name, filesystem, networkMode string, modify func(*config.AgentConfig)) *config.AgentConfig {

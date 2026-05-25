@@ -48,26 +48,28 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 		rp.Mode = "enforcing"
 	}
 
-	// --- Filesystem mode: min(agent, profile inferred) ---
+	// --- Filesystem mode: min(agent inferred, profile inferred) ---
+	agentFSMode := inferAgentFilesystemMode(agent)
 	profileFSMode := inferProfileFilesystemMode(profile)
-	rp.FilesystemMode = minFilesystemMode(agent.Filesystem, profileFSMode)
+	rp.FilesystemMode = minFilesystemMode(agentFSMode, profileFSMode)
 
 	// --- Concrete paths: intersection with capability hierarchy ---
 	// Profile write/exec grants imply read (FR1.12).
 	profileReadGrants := dedupe(append(append(append([]string(nil), profile.Read...), profile.Write...), profile.Exec...))
-	rp.Read = intersectFilesystemPaths(agent.Read, profileReadGrants, agent.Filesystem, "read-only")
-	rp.Write = intersectFilesystemPaths(agent.Write, profile.Write, agent.Filesystem, "read-write")
+	rp.Read = intersectFilesystemPaths(agent.Read, profileReadGrants, agentFSMode, "read-only")
+	rp.Write = intersectFilesystemPaths(agent.Write, profile.Write, agentFSMode, "read-write")
 	// Exec: split off ${VAR} placeholders — they get resolved against
 	// the parent env at launch time by ResolveExecEnvRefs and then
 	// coverage-checked against profile.Exec.
 	execLiterals, execPlaceholders := splitExecEnvPlaceholders(agent.Exec)
-	rp.Exec = intersectFilesystemPaths(execLiterals, profile.Exec, agent.Filesystem, "read-write")
+	rp.Exec = intersectFilesystemPaths(execLiterals, profile.Exec, agentFSMode, "read-write")
 	rp.execPlaceholders = execPlaceholders
 	rp.profileExecGrants = append([]string(nil), profile.Exec...)
 
 	// --- Network: profile is sole runtime authority (TR16) ---
+	agentNetMode := inferAgentNetworkMode(agent)
 	profileNetMode := inferProfileNetworkMode(profile)
-	rp.NetworkMode = minNetworkMode(agent.NetworkMode, profileNetMode)
+	rp.NetworkMode = minNetworkMode(agentNetMode, profileNetMode)
 	if profile.Network != nil {
 		rp.ProxyACLs = profile.Network.Domains
 	}
@@ -134,6 +136,24 @@ func inferProfileFilesystemMode(profile *config.ProfileConfig) string {
 	return "none"
 }
 
+// inferAgentFilesystemMode derives the agent's abstract filesystem mode
+// from its concrete path requests. Symmetric with the profile rule —
+// presence of any write/exec request infers read-write; presence of
+// only reads infers read-only; nothing declared infers none.
+//
+// ${VAR} placeholders in Exec count as exec requests for mode
+// inference even though they're not literal paths — the agent is
+// still asking for an exec capability, just with deferred resolution.
+func inferAgentFilesystemMode(agent *config.AgentConfig) string {
+	if len(agent.Write) > 0 || len(agent.Exec) > 0 {
+		return "read-write"
+	}
+	if len(agent.Read) > 0 {
+		return "read-only"
+	}
+	return "none"
+}
+
 // inferProfileNetworkMode derives the profile's abstract network mode from
 // its declarations:
 //
@@ -147,8 +167,8 @@ func inferProfileFilesystemMode(profile *config.ProfileConfig) string {
 //   - Empty or no network config produces "none".
 //
 // "full" is honoured by the sandbox backends (Seatbelt and bwrap) by
-// skipping the proxy injection step entirely; an agent declaring
-// network_mode = "full" can still be clamped down by the profile's mode.
+// skipping the proxy injection step entirely; the agent's inferred
+// mode can still be clamped down by the profile's mode.
 func inferProfileNetworkMode(profile *config.ProfileConfig) string {
 	hasFullDomain := false
 	hasFilteredDomain := false
@@ -162,6 +182,62 @@ func inferProfileNetworkMode(profile *config.ProfileConfig) string {
 	}
 	if profile.Network != nil {
 		for _, d := range profile.Network.Domains {
+			isWildcard := d.Pattern == "*" || d.Pattern == "**"
+			hasRules := false
+			for _, r := range d.Allow {
+				if len(r.Paths) > 0 || r.Method != "" {
+					hasRules = true
+					break
+				}
+			}
+			if !hasRules {
+				for _, r := range d.Deny {
+					if len(r.Paths) > 0 || r.Method != "" {
+						hasRules = true
+						break
+					}
+				}
+			}
+			if isWildcard && !hasRules {
+				hasFullDomain = true
+			} else {
+				hasFilteredDomain = true
+			}
+		}
+	}
+
+	switch {
+	case hasFilteredDomain:
+		return "filtered"
+	case hasFullDomain:
+		return "full"
+	default:
+		return "none"
+	}
+}
+
+// inferAgentNetworkMode derives the agent's abstract network mode from
+// its declarations, with the same lattice as profiles:
+//
+//   - A bare wildcard ("*" or "**") in either `domains` or a
+//     `network { domain "*" {} }` block (no path/method rules) opts
+//     the agent into "full" — saying "I want unrestricted egress."
+//   - Any other concrete domain entry (or a wildcard with method/path
+//     rules) infers "filtered" — proxy in path, ACLs apply.
+//   - Nothing declared infers "none".
+func inferAgentNetworkMode(agent *config.AgentConfig) string {
+	hasFullDomain := false
+	hasFilteredDomain := false
+
+	for _, d := range agent.Domains {
+		if d == "*" || d == "**" {
+			hasFullDomain = true
+		} else {
+			hasFilteredDomain = true
+		}
+	}
+	if agent.Network != nil {
+		for _, d := range agent.Network.Domains {
 			isWildcard := d.Pattern == "*" || d.Pattern == "**"
 			hasRules := false
 			for _, r := range d.Allow {
@@ -268,10 +344,16 @@ func intersectPaths(requested, granted []string) []string {
 
 // pathCovers returns true if parent is a directory-ancestor of (or equal to) child.
 // Both paths should be absolute or both relative for this to be meaningful.
+// The root path "/" covers every absolute path.
 func pathCovers(parent, child string) bool {
 	p := filepath.Clean(parent)
 	c := filepath.Clean(child)
 	if p == c {
+		return true
+	}
+	// Root is parent of every absolute path. Filtering on
+	// p+"/" would produce "//" which never prefix-matches.
+	if p == string(filepath.Separator) && strings.HasPrefix(c, string(filepath.Separator)) {
 		return true
 	}
 	return strings.HasPrefix(c, p+string(filepath.Separator))

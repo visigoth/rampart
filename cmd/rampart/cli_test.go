@@ -199,8 +199,6 @@ func TestListSubcommand_Agents(t *testing.T) {
 	}
 	agents := `agent "tester" {
   description  = "test agent"
-  filesystem   = "none"
-  network_mode = "none"
 }
 `
 	if err := os.WriteFile(filepath.Join(rampart, "agents.hcl"), []byte(agents), 0o644); err != nil {

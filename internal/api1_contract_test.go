@@ -77,15 +77,10 @@ func TestContractAPI11_ResolveAgent_KnownName_ReturnsAgentConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveAgent: %v", err)
 	}
-	// ENT1 fields must be populated.
+	// ENT1: Name is populated; abstract modes are derived at merge
+	// time from declarations rather than carried as agent fields.
 	if agent.Name == "" {
 		t.Error("AgentConfig.Name should be populated")
-	}
-	if agent.Filesystem == "" {
-		t.Error("AgentConfig.Filesystem should be populated (ENT1)")
-	}
-	if agent.NetworkMode == "" {
-		t.Error("AgentConfig.NetworkMode should be populated (ENT1)")
 	}
 }
 
@@ -234,15 +229,14 @@ func TestContractAPI18_VerdictEnum_ValuesExist(t *testing.T) {
 func TestContractENT1_AgentConfig_Fields(t *testing.T) {
 	a := &config.AgentConfig{}
 	// Compile-time field type checks.
-	_ = a.Name        // string
-	_ = a.Filesystem  // string
-	_ = a.NetworkMode // string
-	_ = a.Read        // []string
-	_ = a.Write       // []string
-	_ = a.Exec        // []string
-	_ = a.Domains     // []string
-	_ = a.SourceFile  // string
-	_ = a.Network     // *config.NetworkConfig
+	_ = a.Name       // string
+	_ = a.Read       // []string
+	_ = a.Write      // []string
+	_ = a.Exec       // []string
+	_ = a.Domains    // []string
+	_ = a.Env        // []string
+	_ = a.SourceFile // string
+	_ = a.Network    // *config.NetworkConfig
 }
 
 // TestContractENT2_ProfileConfig_Fields verifies ProfileConfig fields.
@@ -286,9 +280,7 @@ func TestContractENT3_ResolvedPolicy_Fields(t *testing.T) {
 // minimalAgent returns an AgentConfig with the minimum valid fields per ENT1.
 func minimalAgent() *config.AgentConfig {
 	return &config.AgentConfig{
-		Name:        "test-agent",
-		Filesystem:  "read-write",
-		NetworkMode: "none",
+		Name: "test-agent",
 	}
 }
 
@@ -313,8 +305,6 @@ func api1Fixture(t *testing.T) (*config.Registry, error) {
 		return nil, err
 	}
 	hcl := `agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "full"
 }
 `
 	if err := os.WriteFile(filepath.Join(agentsSubdir, "coding.hcl"), []byte(hcl), 0o644); err != nil {

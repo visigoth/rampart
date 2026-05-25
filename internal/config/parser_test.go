@@ -11,11 +11,9 @@ func TestParseAgentFile_HappyPath(t *testing.T) {
 	src := []byte(`
 agent "coding" {
   description = "A coding agent"
-  filesystem  = "read-write"
   read        = ["/home/user", "/etc/ssh"]
   write       = ["/tmp"]
   exec        = ["/usr/bin/git"]
-  network_mode = "filtered"
   domains     = ["api.anthropic.com"]
 
   network {
@@ -42,14 +40,8 @@ agent "coding" {
 	if a.Description != "A coding agent" {
 		t.Errorf("description: got %q", a.Description)
 	}
-	if a.Filesystem != "read-write" {
-		t.Errorf("filesystem: got %q", a.Filesystem)
-	}
 	if len(a.Read) != 2 {
 		t.Errorf("read: got %d paths", len(a.Read))
-	}
-	if a.NetworkMode != "filtered" {
-		t.Errorf("network_mode: got %q", a.NetworkMode)
 	}
 	if a.Network == nil {
 		t.Fatal("expected network block")
@@ -65,12 +57,8 @@ agent "coding" {
 func TestParseAgentFile_MultiAgent(t *testing.T) {
 	src := []byte(`
 agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
 }
 agent "planning" {
-  filesystem   = "read-only"
-  network_mode = "none"
 }
 `)
 	agents, err := ParseAgentFile("agents.hcl", src)
@@ -90,8 +78,6 @@ func TestParseAgentFile_EmptyAgentBlock(t *testing.T) {
 	// Empty agent block: no capabilities declared — still valid per acceptance criteria.
 	src := []byte(`
 agent "minimal" {
-  filesystem   = "none"
-  network_mode = "none"
 }
 `)
 	agents, err := ParseAgentFile("test.hcl", src)
@@ -103,64 +89,8 @@ agent "minimal" {
 	}
 }
 
-func TestParseAgentFile_MissingFilesystem(t *testing.T) {
-	src := []byte(`
-agent "bad" {
-  network_mode = "none"
-}
-`)
-	_, err := ParseAgentFile("test.hcl", src)
-	if err == nil {
-		t.Fatal("expected error for missing required field 'filesystem'")
-	}
-	if !strings.Contains(err.Error(), "filesystem") {
-		t.Errorf("error should mention 'filesystem': %v", err)
-	}
-}
-
-func TestParseAgentFile_MissingNetworkMode(t *testing.T) {
-	src := []byte(`
-agent "bad" {
-  filesystem = "none"
-}
-`)
-	_, err := ParseAgentFile("test.hcl", src)
-	if err == nil {
-		t.Fatal("expected error for missing required field 'network_mode'")
-	}
-	if !strings.Contains(err.Error(), "network_mode") {
-		t.Errorf("error should mention 'network_mode': %v", err)
-	}
-}
-
-func TestParseAgentFile_InvalidFilesystemMode(t *testing.T) {
-	src := []byte(`
-agent "bad" {
-  filesystem   = "writable"
-  network_mode = "none"
-}
-`)
-	_, err := ParseAgentFile("test.hcl", src)
-	if err == nil {
-		t.Fatal("expected error for invalid filesystem mode")
-	}
-}
-
-func TestParseAgentFile_InvalidNetworkMode(t *testing.T) {
-	src := []byte(`
-agent "bad" {
-  filesystem   = "none"
-  network_mode = "open"
-}
-`)
-	_, err := ParseAgentFile("test.hcl", src)
-	if err == nil {
-		t.Fatal("expected error for invalid network mode")
-	}
-}
-
 func TestParseAgentFile_UnparsableHCL(t *testing.T) {
-	src := []byte(`agent "bad" { filesystem = `)
+	src := []byte(`agent "bad" { read = `)
 	_, err := ParseAgentFile("broken.hcl", src)
 	if err == nil {
 		t.Fatal("expected parse error for malformed HCL")
@@ -175,8 +105,6 @@ func TestParseAgentFile_UnknownAttributesCapturedInRemain(t *testing.T) {
 	// Unknown attributes are captured in Remain for forward compatibility — not an error.
 	src := []byte(`
 agent "forward-compat" {
-  filesystem   = "none"
-  network_mode = "none"
   future_field = "ignored"
 }
 `)
@@ -427,8 +355,6 @@ func TestValidateGlobPattern_UnsupportedWildcard(t *testing.T) {
 func TestParseAgentFile_GlobValidationInRead(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "read-write"
-  network_mode = "none"
   read         = ["foo*"]
 }
 `)
@@ -441,8 +367,6 @@ agent "bad" {
 func TestParseAgentFile_GlobValidationInDomains(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
   domains      = ["api?anthropic.com"]
 }
 `)
@@ -455,8 +379,6 @@ agent "bad" {
 func TestParseAgentFile_GlobValidationInNetworkDomain(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
   network {
     domain "api?.com" {}
   }
@@ -471,8 +393,6 @@ agent "bad" {
 func TestParseAgentFile_GlobValidationInNetworkPathRules(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "read-write"
-  network_mode = "filtered"
   network {
     domain "api.anthropic.com" {
       allow "POST" {
@@ -493,8 +413,6 @@ agent "bad" {
 func TestParseAgentFile_EnvLiteralValid(t *testing.T) {
 	src := []byte(`
 agent "good" {
-  filesystem   = "none"
-  network_mode = "none"
   env          = ["EDITOR", "PATH", "LC_*", "XDG_*"]
 }
 `)
@@ -510,8 +428,6 @@ agent "good" {
 func TestParseAgentFile_EnvBareWildcardRejected(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "none"
-  network_mode = "none"
   env          = ["*"]
 }
 `)
@@ -524,8 +440,6 @@ agent "bad" {
 func TestParseAgentFile_EnvLeadingWildcardRejected(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "none"
-  network_mode = "none"
   env          = ["*_EDITOR"]
 }
 `)
@@ -538,8 +452,6 @@ agent "bad" {
 func TestParseAgentFile_EnvMidStarRejected(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "none"
-  network_mode = "none"
   env          = ["LC_*_EXTRA"]
 }
 `)
@@ -552,8 +464,6 @@ agent "bad" {
 func TestParseAgentFile_EnvInvalidNameRejected(t *testing.T) {
 	src := []byte(`
 agent "bad" {
-  filesystem   = "none"
-  network_mode = "none"
   env          = ["1BAD"]
 }
 `)

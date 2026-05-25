@@ -127,20 +127,22 @@ func validateAgentConfig(a *AgentConfig, path string) error {
 	if a.Name == "" {
 		return fmt.Errorf("%s: agent block label (name) must not be empty", path)
 	}
-	if err := validateFilesystemMode(a.Filesystem, path, "agent", a.Name); err != nil {
-		return err
-	}
-	if err := validateNetworkMode(a.NetworkMode, path, "agent", a.Name); err != nil {
-		return err
-	}
 	if err := validatePathGlobs(a.Read, path, "agent", a.Name, "read"); err != nil {
 		return err
 	}
 	if err := validatePathGlobs(a.Write, path, "agent", a.Name, "write"); err != nil {
 		return err
 	}
-	if err := validatePathGlobs(a.Exec, path, "agent", a.Name, "exec"); err != nil {
-		return err
+	// Agent exec entries may be either literal paths or `${VAR}`
+	// placeholders. Filter the placeholders out before glob validation
+	// (the `{` and `}` would otherwise trip the wildcard rejection).
+	for _, e := range a.Exec {
+		if isExecEnvPlaceholder(e) {
+			continue
+		}
+		if err := ValidateGlobPattern(e, '/'); err != nil {
+			return fmt.Errorf("%s: agent %q: exec: %w", path, a.Name, err)
+		}
 	}
 	if err := validateDomainGlobs(a.Domains, path, "agent", a.Name, "domains"); err != nil {
 		return err
@@ -191,22 +193,6 @@ func validateProfileConfig(p *ProfileConfig, path string) error {
 		}
 	}
 	return nil
-}
-
-func validateFilesystemMode(mode, path, kind, name string) error {
-	switch mode {
-	case "none", "read-only", "read-write":
-		return nil
-	}
-	return fmt.Errorf("%s: %s %q: filesystem must be one of none, read-only, read-write; got %q", path, kind, name, mode)
-}
-
-func validateNetworkMode(mode, path, kind, name string) error {
-	switch mode {
-	case "none", "filtered", "full":
-		return nil
-	}
-	return fmt.Errorf("%s: %s %q: network_mode must be one of none, filtered, full; got %q", path, kind, name, mode)
 }
 
 func validatePathGlobs(paths []string, file, kind, name, field string) error {
@@ -266,6 +252,18 @@ func validateEnvGlobs(names []string, file, kind, name, field string) error {
 		}
 	}
 	return nil
+}
+
+// isExecEnvPlaceholder reports whether s is a whole-string `${VAR}`
+// reference (the only env-resolved exec form supported). Mirrors
+// policy.execEnvPlaceholderRegex; duplicated here so the parser
+// doesn't take a dependency on the policy package.
+func isExecEnvPlaceholder(s string) bool {
+	if len(s) < 4 || s[0] != '$' || s[1] != '{' || s[len(s)-1] != '}' {
+		return false
+	}
+	name := s[2 : len(s)-1]
+	return isValidEnvName(name)
 }
 
 // isValidEnvName reports whether s could be a real env-var name —

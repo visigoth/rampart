@@ -89,8 +89,6 @@ func scaffoldE2ERampartConfig(t *testing.T, gitDir string) {
 		t.Fatalf("write defaults.hcl: %v", err)
 	}
 	agents := `agent "coding" {
-  filesystem   = "read-write"
-  network_mode = "none"
 }
 `
 	if err := os.WriteFile(filepath.Join(rampDir, "agents.hcl"), []byte(agents), 0o644); err != nil {

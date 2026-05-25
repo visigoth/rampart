@@ -62,11 +62,9 @@ defaults {
 	write(filepath.Join(r, "agents.hcl"), `
 agent "coding" {
   description  = "Repo-wide coding agent"
-  filesystem   = "read-write"
   read         = ["/home/user", "/etc/ssl"]
   write        = ["/tmp", "/home/user/.config"]
   exec         = ["/usr/bin/git", "/usr/bin/make"]
-  network_mode = "filtered"
   domains      = ["api.anthropic.com", "*.npmjs.org"]
 
   network {
@@ -85,16 +83,12 @@ agent "coding" {
 
 agent "planning" {
   description  = "Planning agent - read-only, network access"
-  filesystem   = "read-only"
-  network_mode = "filtered"
 }
 `)
 
 	write(filepath.Join(r, "agents", "reviewing.hcl"), `
 agent "reviewing" {
   description  = "Code review agent - read-only"
-  filesystem   = "read-only"
-  network_mode = "none"
 }
 `)
 
@@ -145,9 +139,7 @@ profile "ci" {
 	write(filepath.Join(r, "profiles", "demo", "agents", "infra.hcl"), `
 agent "infra" {
   description  = "Infrastructure agent - project-scoped"
-  filesystem   = "read-write"
   write        = ["/etc/nginx", "/var/www"]
-  network_mode = "filtered"
   domains      = ["pkg.debian.org"]
 }
 `)
@@ -156,21 +148,15 @@ agent "infra" {
 	write(filepath.Join(globalDir, "agents.hcl"), `
 agent "coding" {
   description  = "Global coding agent (lower priority)"
-  filesystem   = "read-only"
-  network_mode = "none"
 }
 agent "global-planner" {
   description  = "Global planner"
-  filesystem   = "read-only"
-  network_mode = "filtered"
 }
 `)
 
 	write(filepath.Join(globalDir, "agents", "sre.hcl"), `
 agent "sre" {
   description  = "SRE agent (global only)"
-  filesystem   = "read-write"
-  network_mode = "full"
 }
 `)
 
@@ -195,9 +181,6 @@ func TestIntegration_FullPipelineRepoWideResolution(t *testing.T) {
 	if coding.Description != "Repo-wide coding agent" {
 		t.Errorf("coding description: got %q", coding.Description)
 	}
-	if coding.Filesystem != "read-write" {
-		t.Errorf("coding filesystem: got %q", coding.Filesystem)
-	}
 	if len(coding.Read) != 2 {
 		t.Errorf("coding read paths: got %d", len(coding.Read))
 	}
@@ -205,22 +188,14 @@ func TestIntegration_FullPipelineRepoWideResolution(t *testing.T) {
 		t.Errorf("coding network domains: expected 3, got %v", coding.Network)
 	}
 
-	// Planning agent from same agents.hcl.
-	planning, err := reg.ResolveAgent("planning")
-	if err != nil {
+	// Planning agent from same agents.hcl — resolves cleanly.
+	if _, err := reg.ResolveAgent("planning"); err != nil {
 		t.Fatalf("planning: %v", err)
 	}
-	if planning.Filesystem != "read-only" {
-		t.Errorf("planning filesystem: got %q", planning.Filesystem)
-	}
 
-	// Reviewing from agents/ subdir.
-	reviewing, err := reg.ResolveAgent("reviewing")
-	if err != nil {
+	// Reviewing from agents/ subdir — resolves cleanly.
+	if _, err := reg.ResolveAgent("reviewing"); err != nil {
 		t.Fatalf("reviewing: %v", err)
-	}
-	if reviewing.NetworkMode != "none" {
-		t.Errorf("reviewing network_mode: got %q", reviewing.NetworkMode)
 	}
 }
 
@@ -240,12 +215,8 @@ func TestIntegration_GlobalResolutionPath(t *testing.T) {
 		t.Errorf("global-planner description: got %q", gp.Description)
 	}
 
-	sre, err := reg.ResolveAgent("sre")
-	if err != nil {
+	if _, err := reg.ResolveAgent("sre"); err != nil {
 		t.Fatalf("sre: %v", err)
-	}
-	if sre.NetworkMode != "full" {
-		t.Errorf("sre network_mode: got %q", sre.NetworkMode)
 	}
 }
 
@@ -263,9 +234,6 @@ func TestIntegration_ProjectScopedResolution(t *testing.T) {
 	}
 	if infra.Description != "Infrastructure agent - project-scoped" {
 		t.Errorf("infra description: got %q", infra.Description)
-	}
-	if infra.Filesystem != "read-write" {
-		t.Errorf("infra filesystem: got %q", infra.Filesystem)
 	}
 
 	// Qualified default profile.
@@ -360,10 +328,10 @@ func TestIntegration_ValidationErrorIncludesFileLine(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(badFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Invalid env pattern triggers parse-time validation.
 	if err := os.WriteFile(badFile, []byte(`
 agent "bad" {
-  filesystem   = "writable"
-  network_mode = "none"
+  env = ["*"]
 }
 `), 0o644); err != nil {
 		t.Fatal(err)

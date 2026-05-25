@@ -12,9 +12,7 @@ import (
 // 10 paths, 5 network domains.
 func realisticAgent() *config.AgentConfig {
 	return &config.AgentConfig{
-		Name:        "coding",
-		Filesystem:  "read-write",
-		NetworkMode: "filtered",
+		Name: "coding",
 		Read: []string{
 			"/home/user/code",
 			"/home/user/.config",

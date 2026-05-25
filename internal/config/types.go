@@ -5,14 +5,21 @@ package config
 import "github.com/hashicorp/hcl/v2"
 
 // AgentConfig is ENT1: an agent capability declaration loaded from HCL.
+//
+// An agent declares /capability requests/ as concrete path lists and
+// network/env declarations. Abstract modes (read-only vs read-write,
+// none vs filtered vs full network) are inferred from those
+// declarations during policy resolution, the same way profiles infer
+// their modes. There is no separate `filesystem` or `network_mode`
+// attribute — declaring a write path implies read-write filesystem;
+// declaring a bare-wildcard `domain "*" {}` block implies full
+// network. This keeps one source of truth: what the agent asks for.
 type AgentConfig struct {
 	Name        string          `hcl:",label"`
 	Description string          `hcl:"description,optional"`
-	Filesystem  string          `hcl:"filesystem,attr"`
 	Read        []string        `hcl:"read,optional"`
 	Write       []string        `hcl:"write,optional"`
 	Exec        []string        `hcl:"exec,optional"`
-	NetworkMode string          `hcl:"network_mode,attr"`
 	Domains     []string        `hcl:"domains,optional"`
 	// Env lists environment variables the agent requests be passed
 	// through from the parent process. Glob form `LC_*` matches by

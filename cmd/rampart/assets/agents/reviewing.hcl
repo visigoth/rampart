@@ -1,7 +1,6 @@
 # reviewing agent — code review with context lookup (FR7.3).
-# Requests read-only filesystem and limited network for fetching external context.
+# Read-only filesystem; no intrinsic network ask — profile decides.
 agent "reviewing" {
-  description  = "Code review with limited network for context lookup"
-  filesystem   = "read-only"
-  network_mode = "filtered"
+  description = "Code review with limited network for context lookup"
+  read        = ["/"]
 }
