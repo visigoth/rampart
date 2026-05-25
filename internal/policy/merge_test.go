@@ -280,45 +280,6 @@ func TestMerge_Network_EmptyProfile_AgentGetsNothing(t *testing.T) {
 	}
 }
 
-// --- Toolchains ---
-
-func TestMerge_Toolchains_Intersection(t *testing.T) {
-	a := agentWith("coding", "none", "none", func(a *config.AgentConfig) {
-		a.Toolchains = []string{"node", "python", "go"}
-	})
-	p := profileWith("default", ".", func(p *config.ProfileConfig) {
-		p.Toolchains = []string{"node", "python"}
-	})
-	rp, err := MergePolicy(a, p, defaultOpts())
-	if err != nil {
-		t.Fatalf("MergePolicy: %v", err)
-	}
-	if len(rp.Toolchains) != 2 {
-		t.Errorf("Toolchains: got %v, want [node python]", rp.Toolchains)
-	}
-	for _, tc := range rp.Toolchains {
-		if tc != "node" && tc != "python" {
-			t.Errorf("unexpected toolchain: %q", tc)
-		}
-	}
-}
-
-func TestMerge_Toolchains_NoOverlap(t *testing.T) {
-	a := agentWith("coding", "none", "none", func(a *config.AgentConfig) {
-		a.Toolchains = []string{"go"}
-	})
-	p := profileWith("default", ".", func(p *config.ProfileConfig) {
-		p.Toolchains = []string{"node"}
-	})
-	rp, err := MergePolicy(a, p, defaultOpts())
-	if err != nil {
-		t.Fatalf("MergePolicy: %v", err)
-	}
-	if len(rp.Toolchains) != 0 {
-		t.Errorf("Toolchains: got %v, want []", rp.Toolchains)
-	}
-}
-
 // --- CLI overrides ---
 
 func TestMerge_CLIExtraPaths_BypassIntersection(t *testing.T) {

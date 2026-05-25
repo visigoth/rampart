@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/visigoth/rampart/internal/config"
 	"github.com/visigoth/rampart/internal/paths"
@@ -185,11 +184,6 @@ func printHumanReadable(cp *compiledPolicy, out io.Writer) {
 		for _, d := range rp.CLIExtraDomains {
 			fmt.Fprintf(out, "  %s\n", d)
 		}
-	}
-
-	if len(rp.Toolchains) > 0 {
-		fmt.Fprintln(out, "\n--- toolchains ---")
-		fmt.Fprintln(out, strings.Join(rp.Toolchains, ", "))
 	}
 
 	if len(rp.Warnings) > 0 {

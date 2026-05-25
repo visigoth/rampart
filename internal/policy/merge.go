@@ -27,7 +27,6 @@ var networkLevel = map[string]int{
 //
 // Filesystem mode: min(agent, profile_inferred_mode) — most restrictive wins.
 // Network rules: profile is the sole source of runtime rules (TR16).
-// Toolchains: intersection.
 // CLI overrides in opts bypass intersection unconditionally (FR17).
 func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts MergeOptions) (*ResolvedPolicy, error) {
 	rp := &ResolvedPolicy{
@@ -66,9 +65,6 @@ func MergePolicy(agent *config.AgentConfig, profile *config.ProfileConfig, opts 
 	}
 	rp.AllowedDomains = append([]string(nil), profile.AllowedDomains...)
 	rp.UnixSockets = append([]string(nil), profile.UnixSockets...)
-
-	// --- Toolchains: intersection ---
-	rp.Toolchains = intersectStrings(agent.Toolchains, profile.Toolchains)
 
 	// --- Compile-time validation ---
 	warnings, err := validateAgentVsProfile(agent, profile, opts.Strict)
@@ -268,21 +264,6 @@ func pathCovers(parent, child string) bool {
 		return true
 	}
 	return strings.HasPrefix(c, p+string(filepath.Separator))
-}
-
-// intersectStrings returns the set intersection of two string slices.
-func intersectStrings(a, b []string) []string {
-	set := make(map[string]bool, len(b))
-	for _, s := range b {
-		set[s] = true
-	}
-	var result []string
-	for _, s := range a {
-		if set[s] {
-			result = append(result, s)
-		}
-	}
-	return result
 }
 
 // dedupe removes duplicate strings while preserving order.

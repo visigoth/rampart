@@ -68,7 +68,6 @@ agent "coding" {
   exec         = ["/usr/bin/git", "/usr/bin/make"]
   network_mode = "filtered"
   domains      = ["api.anthropic.com", "*.npmjs.org"]
-  toolchains   = ["node", "python", "go"]
 
   network {
     domain "api.anthropic.com" {
@@ -88,7 +87,6 @@ agent "planning" {
   description  = "Planning agent - read-only, network access"
   filesystem   = "read-only"
   network_mode = "filtered"
-  toolchains   = ["node"]
 }
 `)
 
@@ -97,7 +95,6 @@ agent "reviewing" {
   description  = "Code review agent - read-only"
   filesystem   = "read-only"
   network_mode = "none"
-  toolchains   = ["node", "python"]
 }
 `)
 
@@ -116,7 +113,6 @@ profile "default" {
   write           = ["/tmp"]
   exec            = ["/usr/bin", "/usr/local/bin"]
   allowed_domains = ["api.anthropic.com", "*.npmjs.org", "*.pypi.org"]
-  toolchains      = ["node", "python", "go"]
 
   network {
     domain "api.anthropic.com" {
@@ -204,9 +200,6 @@ func TestIntegration_FullPipelineRepoWideResolution(t *testing.T) {
 	}
 	if len(coding.Read) != 2 {
 		t.Errorf("coding read paths: got %d", len(coding.Read))
-	}
-	if len(coding.Toolchains) != 3 {
-		t.Errorf("coding toolchains: got %v", coding.Toolchains)
 	}
 	if coding.Network == nil || len(coding.Network.Domains) != 3 {
 		t.Errorf("coding network domains: expected 3, got %v", coding.Network)

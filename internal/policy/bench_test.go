@@ -9,7 +9,7 @@ import (
 )
 
 // realisticAgent builds an AgentConfig representative of a real coding agent:
-// 10 paths, 5 network domains, 3 toolchains.
+// 10 paths, 5 network domains.
 func realisticAgent() *config.AgentConfig {
 	return &config.AgentConfig{
 		Name:        "coding",
@@ -40,7 +40,6 @@ func realisticAgent() *config.AgentConfig {
 				{Pattern: "sum.golang.org"},
 			},
 		},
-		Toolchains: []string{"go", "node", "python"},
 	}
 }
 
@@ -81,12 +80,11 @@ func realisticProfile() *config.ProfileConfig {
 				{Pattern: "sum.golang.org"},
 			},
 		},
-		Toolchains: []string{"go", "node", "python"},
 	}
 }
 
 // BenchmarkMergePolicy measures the full MergePolicy call with a realistic
-// agent and profile (5 domains, 10 paths, 3 toolchains).
+// agent and profile (5 domains, 10 paths).
 func BenchmarkMergePolicy(b *testing.B) {
 	a := realisticAgent()
 	p := realisticProfile()

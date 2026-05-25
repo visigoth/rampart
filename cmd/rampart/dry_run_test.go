@@ -115,7 +115,6 @@ func TestPrintHumanReadable_SimplePolicy(t *testing.T) {
 		Exec:           []string{"/usr/bin/git"},
 		NetworkMode:    "filtered",
 		AllowedDomains: []string{"api.anthropic.com"},
-		Toolchains:     []string{"go", "node"},
 	}
 	cp := &compiledPolicy{Policy: rp, AgentName: "coding", ProfileName: "myproject/default"}
 
@@ -136,8 +135,6 @@ func TestPrintHumanReadable_SimplePolicy(t *testing.T) {
 		"network",
 		"mode: filtered",
 		"api.anthropic.com",
-		"toolchains",
-		"go", "node",
 	}
 	for _, want := range checks {
 		if !strings.Contains(s, want) {
@@ -151,7 +148,7 @@ func TestPrintHumanReadable_WithWarnings(t *testing.T) {
 		Mode:           "enforcing",
 		FilesystemMode: "none",
 		NetworkMode:    "none",
-		Warnings:       []string{"path /nonexistent does not exist", "toolchain 'rust' not in intersection"},
+		Warnings:       []string{"path /nonexistent does not exist", "domain '*.evil.com' not granted"},
 	}
 	cp := &compiledPolicy{Policy: rp, AgentName: "planning", ProfileName: "proj/default"}
 
@@ -165,8 +162,8 @@ func TestPrintHumanReadable_WithWarnings(t *testing.T) {
 	if !strings.Contains(s, "/nonexistent") {
 		t.Error("output missing warning about /nonexistent")
 	}
-	if !strings.Contains(s, "rust") {
-		t.Error("output missing warning about rust")
+	if !strings.Contains(s, "evil.com") {
+		t.Error("output missing warning about evil.com")
 	}
 }
 
@@ -199,7 +196,7 @@ func TestPrintHumanReadable_WithCLIOverrides(t *testing.T) {
 }
 
 func TestPrintHumanReadable_NoOptionalSections(t *testing.T) {
-	// A minimal policy with no paths, domains, toolchains, or warnings.
+	// A minimal policy with no paths, domains, or warnings.
 	rp := &policy.ResolvedPolicy{
 		Mode:           "permissive",
 		FilesystemMode: "none",
@@ -216,9 +213,6 @@ func TestPrintHumanReadable_NoOptionalSections(t *testing.T) {
 		t.Error("header missing")
 	}
 	// Optional sections must NOT appear when empty.
-	if strings.Contains(s, "toolchains") {
-		t.Error("toolchains section should be absent when empty")
-	}
 	if strings.Contains(s, "warnings") {
 		t.Error("warnings section should be absent when empty")
 	}

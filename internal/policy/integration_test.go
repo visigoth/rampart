@@ -46,7 +46,6 @@ type integrationCase struct {
 	wantRead    []string // nil means "don't check"; empty means "must be empty"
 	wantWrite   []string
 	wantExec    []string
-	wantTC      []string
 	wantWarn    int // minimum number of warnings expected
 	wantErr     bool
 }
@@ -61,7 +60,6 @@ agent "coding" {
   network_mode = "filtered"
   read  = ["/home/user/code"]
   write = ["/home/user/code", "/tmp"]
-  toolchains = ["go", "node"]
 }`,
 			profileHCL: `
 profile "default" {
@@ -69,13 +67,11 @@ profile "default" {
   read    = ["/home/user/code", "/etc/ssl"]
   write   = ["/home/user/code", "/tmp"]
   allowed_domains = ["api.anthropic.com"]
-  toolchains = ["go", "node", "python"]
 }`,
 			wantFS:  "read-write",
 			wantNet: "filtered",
 			wantRead: []string{"/home/user/code"},
 			wantWrite: []string{"/home/user/code", "/tmp"},
-			wantTC:  []string{"go", "node"},
 		},
 		{
 			name: "02_profile_restricts_filesystem_mode",
@@ -205,21 +201,6 @@ profile "open-net" {
 			wantNet: "none",
 		},
 		{
-			name: "09_toolchain_intersection_partial",
-			agentHCL: `
-agent "polyglot" {
-  filesystem   = "none"
-  network_mode = "none"
-  toolchains   = ["go", "rust", "python"]
-}`,
-			profileHCL: `
-profile "go-only" {
-  workdir    = "/project"
-  toolchains = ["go"]
-}`,
-			wantTC: []string{"go"},
-		},
-		{
 			name: "10_cli_extra_paths_bypass_intersection",
 			agentHCL: `
 agent "debug" {
@@ -347,9 +328,6 @@ profile "sandbox" {
 			if tc.wantExec != nil {
 				assertPathsEqual(t, "Exec", rp.Exec, tc.wantExec)
 			}
-			if tc.wantTC != nil {
-				assertStringsContain(t, "Toolchains", rp.Toolchains, tc.wantTC)
-			}
 			if tc.wantWarn > 0 && len(rp.Warnings) < tc.wantWarn {
 				t.Errorf("Warnings: got %d, want at least %d: %v", len(rp.Warnings), tc.wantWarn, rp.Warnings)
 			}
@@ -394,26 +372,6 @@ func assertPathsEqual(t *testing.T, field string, got, want []string) {
 	}
 }
 
-// assertStringsContain checks that every element of want appears in got.
-func assertStringsContain(t *testing.T, field string, got, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Errorf("%s length: got %d (%v), want %d (%v)", field, len(got), got, len(want), want)
-		return
-	}
-	for _, w := range want {
-		found := false
-		for _, g := range got {
-			if g == w {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("%s: missing %q in %v", field, w, got)
-		}
-	}
-}
 
 // TestMergePolicy_CapabilityHierarchy_TableDriven verifies the three-level hierarchy
 // (exec → read, write → read, exec ↛ write) with a single table-driven test.

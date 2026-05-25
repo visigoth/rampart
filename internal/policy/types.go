@@ -41,8 +41,6 @@ type ResolvedPolicy struct {
 	// overridden by MergeOptions.NoTLSMITM (CLI --no-tls-mitm).
 	NoTLSMITM bool
 
-	Toolchains []string
-
 	// CLI augmentations: bypass intersection (FR17).
 	CLIExtraPaths   []string
 	CLIExtraDomains []string

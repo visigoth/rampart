@@ -170,7 +170,6 @@ func mergeInheritedProfile(parent, child *ProfileConfig) *ProfileConfig {
 	merged.AllowedDomains = dedupAppend(parent.AllowedDomains, child.AllowedDomains)
 	merged.MitmDomains = dedupAppend(parent.MitmDomains, child.MitmDomains)
 	merged.UnixSockets = dedupAppend(parent.UnixSockets, child.UnixSockets)
-	merged.Toolchains = dedupAppend(parent.Toolchains, child.Toolchains)
 	if merged.Workdir == "" {
 		merged.Workdir = parent.Workdir
 	}

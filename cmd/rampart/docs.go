@@ -345,8 +345,7 @@ semantics:`))
 	fmt.Fprintln(b, ".RS")
 	fmt.Fprintln(b, ".IP \\(bu 4")
 	fmt.Fprintln(b, escapeProse(`Path lists (read/write/exec, allowed_domains, mitm_domains,
-unix_sockets, toolchains) are concatenated parent-first, then
-deduped.`))
+unix_sockets) are concatenated parent-first, then deduped.`))
 	fmt.Fprintln(b, ".IP \\(bu 4")
 	fmt.Fprintln(b, escapeProse(`Network domains (the `+"`network { domain ... }`"+` block) are
 concatenated.`))
@@ -434,9 +433,6 @@ write implies read at the capability level.`))
 proxy ACLs.`))
 	fmt.Fprintln(b, ".IP \\(bu 4")
 	fmt.Fprintln(b, escapeProse(`no_tls_mitm — boolean opt-out of TLS interception.`))
-	fmt.Fprintln(b, ".IP \\(bu 4")
-	fmt.Fprintln(b, escapeProse(`toolchains — abstract toolchain identifiers (intersected with
-the agent's request).`))
 	fmt.Fprintln(b, ".IP \\(bu 4")
 	fmt.Fprintln(b, escapeProse(`use "category/name" { var = value ... } — import a module.`))
 	fmt.Fprintln(b, ".RE")

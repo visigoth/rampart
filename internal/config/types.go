@@ -14,7 +14,6 @@ type AgentConfig struct {
 	Exec        []string        `hcl:"exec,optional"`
 	NetworkMode string          `hcl:"network_mode,attr"`
 	Domains     []string        `hcl:"domains,optional"`
-	Toolchains  []string        `hcl:"toolchains,optional"`
 	Network     *NetworkConfig  `hcl:"network,block"`
 	Remain      hcl.Body        `hcl:",remain"`
 
@@ -51,7 +50,6 @@ type ProfileConfig struct {
 	// CONNECT time, but path rules are not enforced for HTTPS (HTTP is
 	// unaffected). When true, no MITM CA is required at runtime.
 	NoTLSMITM      bool            `hcl:"no_tls_mitm,optional"`
-	Toolchains     []string        `hcl:"toolchains,optional"`
 	Network        *NetworkConfig  `hcl:"network,block"`
 	Remain         hcl.Body        `hcl:",remain"`
 

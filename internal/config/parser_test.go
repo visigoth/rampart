@@ -17,7 +17,6 @@ agent "coding" {
   exec        = ["/usr/bin/git"]
   network_mode = "filtered"
   domains     = ["api.anthropic.com"]
-  toolchains  = ["node", "python"]
 
   network {
     domain "api.anthropic.com" {
@@ -51,9 +50,6 @@ agent "coding" {
 	}
 	if a.NetworkMode != "filtered" {
 		t.Errorf("network_mode: got %q", a.NetworkMode)
-	}
-	if len(a.Toolchains) != 2 {
-		t.Errorf("toolchains: got %v", a.Toolchains)
 	}
 	if a.Network == nil {
 		t.Fatal("expected network block")
@@ -204,7 +200,6 @@ profile "default" {
   exec    = ["/usr/bin"]
   allowed_domains = ["api.anthropic.com"]
   mitm_domains    = ["api.anthropic.com"]
-  toolchains      = ["node"]
 
   network {
     domain "api.anthropic.com" {

@@ -118,7 +118,6 @@ func TestContractAPI12_MergePolicy_ReturnsResolvedPolicyENT3(t *testing.T) {
 	_ = rp.Read           // []string
 	_ = rp.Write          // []string
 	_ = rp.Exec           // []string
-	_ = rp.Toolchains     // []string
 	_ = rp.Warnings       // []string
 	_ = rp.ProxyACLs      // []config.DomainConfig
 	_ = rp.MitmDomains    // []string
@@ -241,7 +240,6 @@ func TestContractENT1_AgentConfig_Fields(t *testing.T) {
 	_ = a.Read        // []string
 	_ = a.Write       // []string
 	_ = a.Exec        // []string
-	_ = a.Toolchains  // []string
 	_ = a.Domains     // []string
 	_ = a.SourceFile  // string
 	_ = a.Network     // *config.NetworkConfig
@@ -257,7 +255,6 @@ func TestContractENT2_ProfileConfig_Fields(t *testing.T) {
 	_ = p.Exec           // []string
 	_ = p.AllowedDomains // []string
 	_ = p.MitmDomains    // []string
-	_ = p.Toolchains     // []string
 	_ = p.SourceFile     // string
 	_ = p.Network        // *config.NetworkConfig
 }
@@ -277,7 +274,6 @@ func TestContractENT3_ResolvedPolicy_Fields(t *testing.T) {
 	_ = rp.AllowedDomains // []string
 	_ = rp.ProxyACLs      // []config.DomainConfig
 	_ = rp.MitmDomains    // []string
-	_ = rp.Toolchains     // []string
 	_ = rp.CLIExtraPaths   // []string
 	_ = rp.CLIExtraDomains // []string
 	_ = rp.Warnings       // []string
@@ -319,7 +315,6 @@ func api1Fixture(t *testing.T) (*config.Registry, error) {
 	hcl := `agent "coding" {
   filesystem   = "read-write"
   network_mode = "full"
-  toolchains   = ["go"]
 }
 `
 	if err := os.WriteFile(filepath.Join(agentsSubdir, "coding.hcl"), []byte(hcl), 0o644); err != nil {
