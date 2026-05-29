@@ -90,6 +90,45 @@ func TestSetup_InTmux_SplitsCurrentWindow(t *testing.T) {
 	}
 }
 
+func TestSetup_InTmux_SplitTargetsCurrentPaneViaTMUX_PANE(t *testing.T) {
+	// Without `-t $TMUX_PANE` on the split-window call, tmux uses the
+	// server's currently active client, which can land in a different
+	// session entirely when the tmux server is shared. Pin the target
+	// pane explicitly so the watch pane always appears next to rampart.
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+	t.Setenv("TMUX_PANE", "%42")
+
+	mock := newMockRunner()
+	if _, err := tmux.Setup(tmux.PaneConfig{
+		PaneCommand:    "rampart escalations --watch",
+		RunnerOverride: mock,
+	}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	var splitCall []string
+	for _, call := range mock.calls {
+		if len(call) >= 2 && call[1] == "split-window" {
+			splitCall = call
+			break
+		}
+	}
+	if splitCall == nil {
+		t.Fatalf("split-window was not called; calls = %v", mock.calls)
+	}
+
+	foundTarget := false
+	for i := 0; i < len(splitCall)-1; i++ {
+		if splitCall[i] == "-t" && splitCall[i+1] == "%42" {
+			foundTarget = true
+			break
+		}
+	}
+	if !foundTarget {
+		t.Errorf("expected `-t %%42` in split-window args, got %v", splitCall)
+	}
+}
+
 func TestSetup_InTmux_BottomPaneIdleLines(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
 

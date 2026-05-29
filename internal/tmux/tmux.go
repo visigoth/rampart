@@ -156,10 +156,22 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 			// Split current window horizontally (bottom pane). -d keeps the
 			// agent pane focused (without it, tmux would focus the watch
 			// pane and user keystrokes would not reach claude).
-			out, err := r.Run("tmux", "split-window", "-v", "-d",
+			//
+			// -t targets the pane we're running in via $TMUX_PANE. Without
+			// it, tmux split-window defaults to the server's currently
+			// active client, which can be a different session entirely
+			// when the tmux server is shared across multiple sessions —
+			// the split lands in the wrong window and never appears for
+			// the user. $TMUX_PANE is set automatically by tmux for every
+			// process running inside a pane.
+			splitArgs := []string{"tmux", "split-window", "-v", "-d",
 				"-l", strconv.Itoa(idleLines),
-				"-P", "-F", "#{pane_id}",
-				paneCmd)
+				"-P", "-F", "#{pane_id}"}
+			if pane := os.Getenv("TMUX_PANE"); pane != "" {
+				splitArgs = append(splitArgs, "-t", pane)
+			}
+			splitArgs = append(splitArgs, paneCmd)
+			out, err := r.Run(splitArgs...)
 			if err != nil {
 				return nil, fmt.Errorf("tmux split-window: %w", err)
 			}

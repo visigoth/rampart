@@ -142,11 +142,16 @@ func TestUX_PaneLifecycle_RealTmux(t *testing.T) {
 
 	runner := &runnerForServer{srv: srv}
 	// Simulate "we are inside tmux, talking to this session" so Setup takes the
-	// split-current-window path.
+	// split-current-window path. TMUX_PANE is the per-pane identifier tmux
+	// sets automatically for every process inside a pane; rampart reads it
+	// to target the split at its own pane (otherwise the split lands at the
+	// server's currently active client — which can be a different session
+	// when the tmux server is shared).
 	t.Setenv("TMUX", filepath.Join("/tmp", "fake-tmux-env"))
+	t.Setenv("TMUX_PANE", agentPaneID)
 
-	// Set the active client target by selecting the agent pane so split-window
-	// (which has no -t) lands inside this session.
+	// Defensive select-pane: even with -t targeting, an active-pane mismatch
+	// can leave the test server in an inconsistent state.
 	srv.mustRun("select-pane", "-t", agentPaneID)
 
 	const idle = 4
