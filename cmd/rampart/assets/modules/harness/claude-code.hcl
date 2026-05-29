@@ -34,6 +34,17 @@ variable "claude_cache_dir" {
 #     for the file above (lock file + temp file with PID suffix). The
 #     glob covers the rotating .tmp.<pid>.<ts> names.
 #   - ${var.claude_cache_dir}: NodeJS + MCP log spool.
+read = [
+  # macOS BSD syslog client socket. Bun (claude's runtime) calls
+  # asl_open()/syslog() at JavaScriptCore bootstrap, which stats this
+  # socket path before connect(2). The connect itself is sandboxed at
+  # the unix-socket layer; this entry just covers the initial stat
+  # that would otherwise emit an escalation per process start.
+  # Not in system/base because non-Bun runtimes (Node, Go, Python,
+  # plain shell) don't probe this path.
+  "/private/var/run/syslog",
+]
+
 write = [
   "${var.claude_dir}",
   "~/.claude.json",

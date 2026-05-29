@@ -44,11 +44,11 @@ read = [
   # read grant is safe.
   "/Library/Preferences/Logging",
   "/Library/Preferences/com.apple.networkd.plist",
-  # libsystem asl/syslog client probes a fixed BSD socket path at
-  # bootstrap; stat is harmless and unblocks the next startup phase.
-  "/private/var/run/syslog",
-  # Timezone resolution. ICU and CoreFoundation walk these to map
-  # America/Los_Angeles → GMT offset; touched on every process start.
+
+  # Timezone resolution. ICU (Node, Bun, Swift), CoreFoundation,
+  # Python's datetime, Go's time package, and libc's tzset all
+  # consult these on first call. Touched by essentially every
+  # language runtime, so universally inert when granted.
   "/usr/share/zoneinfo",
   "/private/etc/localtime",
   "/private/var/db/timezone",
