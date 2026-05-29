@@ -19,6 +19,21 @@ read = [
   "/etc/ssl/cert.pem",
   "/etc/pki/tls/certs",
   "/usr/share/ca-certificates",
+
+  # PATH-scan directories. Every modern launcher (Bun, Node, Go's
+  # exec.LookPath, the shell `command -v`) walks PATH entries with
+  # readdir(2) to find binaries before exec'ing them. Exec grants on
+  # specific binaries (handled by other modules) don't imply read on
+  # the parent directory; without these, claude/bun emit one
+  # escalation per PATH entry at startup.
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+  "/usr/local/bin",
+  "/opt/homebrew/bin",
+  "/home/linuxbrew/.linuxbrew/bin",
+
   # macOS noise-probe paths that every modern runtime touches at
   # startup — Bun (claude), node, swift, etc. all stat / read these
   # via system frameworks. Each one we don't allow becomes a
@@ -29,6 +44,14 @@ read = [
   # read grant is safe.
   "/Library/Preferences/Logging",
   "/Library/Preferences/com.apple.networkd.plist",
+  # libsystem asl/syslog client probes a fixed BSD socket path at
+  # bootstrap; stat is harmless and unblocks the next startup phase.
+  "/private/var/run/syslog",
+  # Timezone resolution. ICU and CoreFoundation walk these to map
+  # America/Los_Angeles → GMT offset; touched on every process start.
+  "/usr/share/zoneinfo",
+  "/private/etc/localtime",
+  "/private/var/db/timezone",
 ]
 
 exec = [
