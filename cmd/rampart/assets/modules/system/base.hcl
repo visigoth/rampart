@@ -45,6 +45,14 @@ read = [
   "/Library/Preferences/Logging",
   "/Library/Preferences/com.apple.networkd.plist",
 
+  # macOS metadata server (mds) per-uid IPC dir. Anything talking
+  # to Spotlight, Quick Look, kMDQueryAttr* or CoreServices'
+  # MetadataAvailability framework stats files in here at startup —
+  # Bun/Node apps probe se_SecurityMessages specifically.
+  # /var/db is a symlink to /private/var/db on macOS; grant the
+  # private path because that's what Seatbelt sees after resolution.
+  "/private/var/db/mds",
+
   # Timezone resolution. ICU (Node, Bun, Swift), CoreFoundation,
   # Python's datetime, Go's time package, and libc's tzset all
   # consult these on first call. Touched by essentially every
