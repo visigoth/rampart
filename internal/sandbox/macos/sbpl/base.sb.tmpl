@@ -3,14 +3,14 @@
 (version 1)
 
 {{- if .Permissive}}
-;; Baseline: allow everything (--mode permissive). The kernel never
-;; EPERMs an unmatched op, so the agent runs unrestricted. Use this
-;; for "what does this tool actually touch" audits paired with
-;; `fs_usage -w -f filesys <pid>` or Console.app filtering on the
-;; `sandbox-exec` subsystem. Engine-side escalation is moot under
-;; (allow default) since no rule denies, but the policy-generated
-;; allow rules below still describe the intended grant surface for
-;; dry-run inspection.
+;; Baseline: allow everything (--mode audit). The kernel never
+;; EPERMs an unmatched op, so the agent runs unrestricted. The
+;; supervisor auto-launches `fs_usage` against the child's PID to
+;; capture the actual touched-paths set, written to
+;; ~/.rampart/audit/<pid>.fs_usage.log for fold-back into policy.
+;; Engine-side escalation is moot under (allow default) since no
+;; rule denies; the policy-generated allow rules below still
+;; describe the intended grant surface for --dry-run inspection.
 (allow default)
 {{- else}}
 ;; Baseline: deny everything, then carve out what is needed. (deny default)

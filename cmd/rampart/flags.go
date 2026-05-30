@@ -40,7 +40,7 @@ func attachRunFlags(cmd *cobra.Command) *runFlags {
 
 	cmd.Flags().StringVar(&f.agent, "agent", "", "Agent name or project/name (default: from .rampart/defaults.hcl)")
 	cmd.Flags().StringVar(&f.profile, "profile", "", "Profile name or project/name (default: from .rampart/defaults.hcl)")
-	cmd.Flags().StringVar(&f.mode, "mode", "enforcing", "Enforcement mode: enforcing or permissive")
+	cmd.Flags().StringVar(&f.mode, "mode", "enforcing", "Enforcement mode: enforcing or audit (was \"permissive\"; allow-default sandbox + fs_usage capture for policy authoring)")
 	cmd.Flags().BoolVar(&f.strict, "strict", false, "Promote compile-time validation warnings to errors")
 	cmd.Flags().BoolVarP(&f.verbose, "verbose", "v", false, "Print policy compilation diagnostics")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Compile policy and print sandbox flags without launching")

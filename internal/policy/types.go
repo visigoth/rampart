@@ -10,7 +10,7 @@ type ResolvedPolicy struct {
 	AgentName   string
 	ProfileName string
 
-	// Mode is the enforcement mode (enforcing or permissive). Comes from CLI or
+	// Mode is the enforcement mode (enforcing or audit). Comes from CLI or
 	// config.json — NOT from the agent or profile.
 	Mode string
 
@@ -73,7 +73,7 @@ type ResolvedPolicy struct {
 
 // MergeOptions carries CLI overrides applied after intersection.
 type MergeOptions struct {
-	// Mode overrides the enforcement mode ("enforcing" | "permissive").
+	// Mode overrides the enforcement mode ("enforcing" | "audit"; legacy "permissive").
 	// Empty means use the default ("enforcing").
 	Mode string
 

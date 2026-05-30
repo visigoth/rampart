@@ -85,7 +85,10 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	// engine is fatal; the monitor needs the child's PID and is wired via
 	// PostStartHook below. On non-darwin builds these are nil — a future
 	// task will wire the linux NotifRespond applier and seccomp supervisor.
-	enforcing := flags.mode != "permissive"
+	// Audit mode is the new name for what used to be called "permissive".
+	// Accept the old name as an alias for one cycle in case anyone has
+	// muscle memory or scripts that hard-coded it.
+	enforcing := flags.mode != "audit" && flags.mode != "permissive"
 	engineSub, postStart, childExitCh := newAuthSubsystems(srv, bridge, enforcing)
 	if engineSub != nil {
 		fatal = append(fatal, engineSub)
@@ -124,6 +127,11 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 			recoverable = append(recoverable, &tmuxPaneSubsystem{pane: pane})
 		}
 	}
+
+	// In audit mode, wrap the post-start hook so it also spawns an
+	// fs_usage capture subsystem alongside the engine. On non-darwin
+	// builds this is a no-op.
+	postStart = wrapPostStartForAudit(postStart, flags.mode, stderr)
 
 	cfg := supervisor.Config{
 		Cmd:                   cmd,
