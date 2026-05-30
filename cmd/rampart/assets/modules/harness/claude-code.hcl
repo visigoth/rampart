@@ -49,6 +49,11 @@ write = [
   "${var.claude_dir}",
   "~/.claude.json",
   "~/.claude.json.lock",
+  # Atomic-rename machinery: claude writes a sibling .tmp.<pid>.<ts>
+  # file, fsyncs, then renames over .claude.json. The trailing-`*`
+  # glob compiles to a regex match against the canonical home dir
+  # so any rotating tmp name is covered without enumerating PIDs.
+  "~/.claude.json.tmp.*",
   "${var.claude_cache_dir}",
 ]
 

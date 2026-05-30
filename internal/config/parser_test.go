@@ -324,10 +324,36 @@ func TestValidateGlobPattern_EmptyPattern(t *testing.T) {
 }
 
 func TestValidateGlobPattern_MixedLiteralWildcard(t *testing.T) {
-	cases := []string{"foo*", "*bar", "foo*bar", "api*com"}
+	// Leading-star and mid-segment-star are still rejected — they're
+	// not expressible in seatbelt/bwrap as a simple subpath OR
+	// trailing-prefix regex, and no module needs them today. The
+	// trailing-`*` prefix form (e.g. "foo*") is now accepted; see
+	// TestValidateGlobPattern_TrailingStarPrefix.
+	cases := []string{"*bar", "foo*bar", "api*com"}
 	for _, c := range cases {
 		if err := ValidateGlobPattern(c, '.'); err == nil {
 			t.Errorf("expected error for mixed segment %q", c)
+		}
+	}
+}
+
+func TestValidateGlobPattern_TrailingStarPrefix(t *testing.T) {
+	// Trailing-star prefix segments are valid — they compile to a
+	// regex match in the sandbox layer. Both separators (path '/'
+	// and domain '.') accept this form.
+	cases := []struct {
+		pat string
+		sep byte
+	}{
+		{"foo*", '/'},
+		{".claude.json.tmp.*", '/'},
+		{"/Users/shaheen/.claude.json.tmp.*", '/'},
+		{"prefix*", '.'},
+	}
+	for _, c := range cases {
+		if err := ValidateGlobPattern(c.pat, c.sep); err != nil {
+			t.Errorf("trailing-star prefix %q (sep=%q) should be valid: %v",
+				c.pat, string(c.sep), err)
 		}
 	}
 }
@@ -353,14 +379,16 @@ func TestValidateGlobPattern_UnsupportedWildcard(t *testing.T) {
 }
 
 func TestParseAgentFile_GlobValidationInRead(t *testing.T) {
+	// Leading-star is still rejected (not expressible as a clean
+	// subpath OR trailing-prefix regex in seatbelt/bwrap).
 	src := []byte(`
 agent "bad" {
-  read         = ["foo*"]
+  read         = ["*bar"]
 }
 `)
 	_, err := ParseAgentFile("test.hcl", src)
 	if err == nil {
-		t.Fatal("expected error for mixed literal+wildcard segment in read path")
+		t.Fatal("expected error for leading-star segment in read path")
 	}
 }
 

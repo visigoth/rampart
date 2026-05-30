@@ -46,16 +46,32 @@ func ValidateGlobPattern(pattern string, sep byte) error {
 	return nil
 }
 
-// validateSegment checks that a single pattern segment is either fully literal
-// or fully wildcard (* or **), rejecting mixed segments like "foo*" or "*bar".
+// validateSegment checks that a single pattern segment is one of:
+//
+//   - Fully literal:  "foo"
+//   - Fully wildcard: "*" or "**"
+//   - Trailing-star prefix: "foo*" (literal followed by a single trailing "*")
+//
+// The trailing-star form is what lets policies express things like
+// "any file in this dir whose name starts with .claude.json.tmp." —
+// it desugars to a regex match (subpath-with-prefix) at policy
+// compile time. Leading-star ("*bar") or mid-segment stars ("fo*o")
+// stay rejected — they're harder to compile portably across seatbelt
+// and bwrap and aren't needed by any module so far.
 func validateSegment(seg, pattern string) error {
-	hasStar := strings.Contains(seg, "*")
-	if !hasStar {
+	starCount := strings.Count(seg, "*")
+	if starCount == 0 {
 		return nil // fully literal
 	}
 	// Fully wildcard segments are exactly "*" or "**".
 	if seg == "*" || seg == "**" {
 		return nil
 	}
-	return fmt.Errorf("glob pattern %q has a mixed literal+wildcard segment %q; each segment must be fully literal or fully wildcard (* or **)", pattern, seg)
+	// Trailing-star prefix: "prefix*" with exactly one trailing star
+	// and no other stars in the segment. The literal prefix must be
+	// non-empty (a bare "*" hits the case above).
+	if starCount == 1 && strings.HasSuffix(seg, "*") {
+		return nil
+	}
+	return fmt.Errorf("glob pattern %q has a mixed literal+wildcard segment %q; segments must be fully literal, fully wildcard (* or **), or a literal followed by a trailing `*`", pattern, seg)
 }

@@ -121,15 +121,15 @@
 ;; ---- Policy-generated filesystem rules ----
 {{- range .ReadPaths}}
 (allow file-read*
-    (subpath "{{. | sbplEscape}}"))
+    {{. | sbplPathRule}})
 {{- end}}
 {{- range .WritePaths}}
 (allow file-read* file-write*
-    (subpath "{{. | sbplEscape}}"))
+    {{. | sbplPathRule}})
 {{- end}}
 {{- range .ExecPaths}}
 (allow file-read* process-exec
-    (subpath "{{. | sbplEscape}}"))
+    {{. | sbplPathRule}})
 {{- end}}
 
 ;; ---- Policy-generated network rules ----

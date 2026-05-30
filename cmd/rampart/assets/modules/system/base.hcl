@@ -20,19 +20,18 @@ read = [
   "/etc/pki/tls/certs",
   "/usr/share/ca-certificates",
 
-  # PATH-scan directories. Every modern launcher (Bun, Node, Go's
-  # exec.LookPath, the shell `command -v`) walks PATH entries with
-  # readdir(2) to find binaries before exec'ing them. Exec grants on
-  # specific binaries (handled by other modules) don't imply read on
-  # the parent directory; without these, claude/bun emit one
-  # escalation per PATH entry at startup.
+  # PATH-scan directories on the stock system. Every modern launcher
+  # (Bun, Node, Go's exec.LookPath, the shell `command -v`) walks
+  # PATH entries with readdir(2) to find binaries before exec'ing
+  # them. Exec grants on specific binaries (handled by other
+  # modules) don't imply read on the parent directory; without
+  # these, claude/bun emit one escalation per PATH entry at startup.
+  # Homebrew + linuxbrew PATH entries live in system/homebrew —
+  # use that module to grant the third-party install prefix.
   "/usr/bin",
   "/bin",
   "/usr/sbin",
   "/sbin",
-  "/usr/local/bin",
-  "/opt/homebrew/bin",
-  "/home/linuxbrew/.linuxbrew/bin",
 
   # macOS noise-probe paths that every modern runtime touches at
   # startup — Bun (claude), node, swift, etc. all stat / read these
@@ -63,7 +62,10 @@ read = [
 ]
 
 exec = [
-  # POSIX sh and Bourne-family shells.
+  # POSIX sh and Bourne-family shells, stock-system locations only.
+  # Third-party shells (Homebrew bash/zsh, Nix profiles, etc.)
+  # belong in their respective installer's module — system/homebrew
+  # covers the brewed copies.
   "/bin/sh",
   "/bin/bash",
   "/usr/bin/bash",
@@ -71,13 +73,6 @@ exec = [
   "/usr/bin/zsh",
   "/bin/dash",
   "/usr/bin/dash",
-  # Homebrew + linuxbrew installs.
-  "/opt/homebrew/bin/bash",
-  "/opt/homebrew/bin/zsh",
-  "/usr/local/bin/bash",
-  "/usr/local/bin/zsh",
-  "/home/linuxbrew/.linuxbrew/bin/bash",
-  "/home/linuxbrew/.linuxbrew/bin/zsh",
   # The env helper most shebangs go through.
   "/usr/bin/env",
   # macOS IO Registry probe — Bun (claude's runtime) shells out to

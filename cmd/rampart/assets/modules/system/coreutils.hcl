@@ -17,7 +17,11 @@ exec = [
   "/usr/bin/dirname",
   "/usr/bin/basename",
   "/usr/bin/realpath",
+  "/bin/realpath",
   "/usr/bin/readlink",
+  # Host/user identity.
+  "/usr/bin/hostname",
+  "/bin/hostname",
   # Shebang dispatcher / env query.
   "/usr/bin/env",
   # Trivial primitives.
@@ -59,10 +63,6 @@ exec = [
   "/usr/bin/sha256sum",
   "/usr/bin/sha1sum",
   "/usr/bin/uuidgen",
-  # JSON + YAML inspection (commonly shipped via Homebrew but the user
-  # often has the system version; if not, the path is inert).
-  "/usr/local/bin/jq",
-  "/opt/homebrew/bin/jq",
-  "/usr/local/bin/yq",
-  "/opt/homebrew/bin/yq",
+  # JSON + YAML inspection are commonly shipped via Homebrew; grant
+  # them via system/homebrew rather than enumerating per-tool here.
 ]
