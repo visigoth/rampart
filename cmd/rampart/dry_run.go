@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/visigoth/rampart/internal/config"
 	"github.com/visigoth/rampart/internal/paths"
@@ -52,6 +53,22 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 		return nil, fmt.Errorf("resolving profile %q: %w", profileName, err)
 	}
 
+	// Resolve raw path strings (tildes, "." → gitRoot, relative paths,
+	// symlinks) on the agent and profile BEFORE merge. The merge layer
+	// performs string-based intersection via pathCovers; if one side is
+	// "/" (absolute) and the other is "~/.claude.json" (tilde-relative),
+	// the prefix match fails — silently dropping module-declared writes
+	// from the resolved policy. Canonicalising both sides to absolute
+	// physical paths first makes the intersection do what users expect.
+	base := gitRoot
+	if base == "" {
+		base = startDir
+	}
+	pctx := paths.Context{GitRoot: base}
+	if err := resolveConfigPaths(agent, profile, pctx); err != nil {
+		return nil, fmt.Errorf("resolving config paths: %w", err)
+	}
+
 	rp, err := policy.MergePolicy(agent, profile, flags.toMergeOptions())
 	if err != nil {
 		return nil, fmt.Errorf("compiling policy: %w", err)
@@ -62,11 +79,8 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 	// flow through the normal path normalizer.
 	policy.ResolveExecEnvRefs(rp)
 
-	// Resolve all paths in the policy: ~/foo → $HOME/foo, "." → gitRoot,
-	// other relative paths → gitRoot/<path>, absolute paths unchanged.
-	// Symlinks are resolved as far as the filesystem allows. This must
-	// happen after MergePolicy because intersection is path-string based;
-	// agents in practice carry no concrete paths so ordering is fine.
+	// Final pass for any post-merge artifacts that weren't pre-resolved
+	// (workdir, CLI extras) and to canonicalise the workdir.
 	if err := resolvePolicyPaths(rp, gitRoot, startDir); err != nil {
 		return nil, fmt.Errorf("resolving policy paths: %w", err)
 	}
@@ -76,6 +90,61 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 		AgentName:   agentName,
 		ProfileName: profileName,
 	}, nil
+}
+
+// resolveConfigPaths canonicalises every path entry in the agent and
+// the (already-extends-merged) profile in place. Runs BEFORE
+// MergePolicy so the intersection sees physical absolute paths on
+// both sides. Without this, declarations like `write = ["~/.claude.json"]`
+// in modules don't intersect agent declarations like `write = ["/"]` —
+// the tilde never gets expanded, the string prefix match fails, and
+// the user's broad ask silently drops the module's specific grant.
+//
+// Symlinks are resolved to their physical targets so the kernel
+// sandbox sees the same paths it grants.
+func resolveConfigPaths(agent *config.AgentConfig, profile *config.ProfileConfig, ctx paths.Context) error {
+	resolve := func(list []string, label string) ([]string, error) {
+		out, err := paths.ResolveAll(list, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		return out, nil
+	}
+
+	var err error
+	if agent.Read, err = resolve(agent.Read, "agent.read"); err != nil {
+		return err
+	}
+	if agent.Write, err = resolve(agent.Write, "agent.write"); err != nil {
+		return err
+	}
+	// agent.Exec may contain ${VAR} placeholders that paths.Resolve must
+	// not interpret. Pass literal entries through resolve; pass
+	// placeholders through unchanged.
+	resolvedExec := make([]string, 0, len(agent.Exec))
+	for _, e := range agent.Exec {
+		if strings.HasPrefix(e, "${") && strings.HasSuffix(e, "}") {
+			resolvedExec = append(resolvedExec, e)
+			continue
+		}
+		r, rerr := paths.Resolve(e, ctx)
+		if rerr != nil {
+			return fmt.Errorf("agent.exec: %w", rerr)
+		}
+		resolvedExec = append(resolvedExec, r)
+	}
+	agent.Exec = resolvedExec
+
+	if profile.Read, err = resolve(profile.Read, "profile.read"); err != nil {
+		return err
+	}
+	if profile.Write, err = resolve(profile.Write, "profile.write"); err != nil {
+		return err
+	}
+	if profile.Exec, err = resolve(profile.Exec, "profile.exec"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // resolvePolicyPaths expands every path entry in rp (Workdir, Read, Write,
