@@ -42,6 +42,13 @@ var htopCandidates = []string{
 	"/usr/local/bin/htop",
 }
 
+// claudeCandidates lists the absolute paths where Anthropic's claude CLI
+// is plausibly installed. Same skip behaviour as htopCandidates.
+var claudeCandidates = []string{
+	"/opt/homebrew/bin/claude",
+	"/usr/local/bin/claude",
+}
+
 func TestE2E_TUI_RendersUnderRampart(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("darwin-only: requires /usr/bin/sandbox-exec")
@@ -291,6 +298,211 @@ func TestE2E_TUI_TmuxWatchPaneTargeting(t *testing.T) {
 	// Wait for the watch pane to clean up. After rampart's supervisor
 	// returns, the watch pane subsystem closes and tmux kills its pane.
 	waitForTmuxPaneCount(t, tmuxBin, tmuxSocket, 1, 10*time.Second)
+}
+
+// TestE2E_TUI_ClaudeLaunches verifies the load-bearing real-world scenario:
+// rampart launches Claude Code under a permissive sandbox inside tmux,
+// claude's TUI renders far enough to show either its login prompt (fresh
+// HOME) or its main input (authenticated session). The point of the test
+// is the launch chain — not what claude does after it's up.
+//
+// We use the worktree's actual `.rampart/` (stoa/permissive profile)
+// because it's tuned for claude and carries the full module fan-out
+// (system/base, harness/claude-code, ai/anthropic, network/any, …).
+// Scaffolding an equivalent profile inline would duplicate hundreds of
+// lines that drift the moment those modules evolve.
+//
+// HOME is intentionally fresh so the test runs against a clean claude
+// state, doesn't accidentally write to the developer's real ~/.claude/,
+// and reveals the login prompt deterministically when there's no cached
+// session token. Both outcomes (login prompt or authenticated REPL) are
+// accepted — either confirms rampart launched claude.
+func TestE2E_TUI_ClaudeLaunches(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only: requires /usr/bin/sandbox-exec")
+	}
+	if _, err := os.Stat("/usr/bin/sandbox-exec"); err != nil {
+		t.Skipf("sandbox-exec not available: %v", err)
+	}
+
+	virtuiBin, err := exec.LookPath("virtui")
+	if err != nil {
+		t.Skipf("virtui not found on PATH: %v", err)
+	}
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skipf("tmux not found on PATH: %v", err)
+	}
+	claudeBin := firstExistingPath(claudeCandidates)
+	if claudeBin == "" {
+		t.Skipf("claude not found at any of %v (install via `brew install --cask claude-code`)", claudeCandidates)
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go toolchain required: %v", err)
+	}
+
+	// Find the worktree root (this test's repo) — it carries the real
+	// .rampart/ that stoa/permissive depends on. PWD at test start is
+	// the cmd/rampart package; the worktree root is its great-grandparent.
+	pwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	worktreeRoot := filepath.Clean(filepath.Join(pwd, "..", "..", "..", ".."))
+	if _, err := os.Stat(filepath.Join(worktreeRoot, ".rampart", "agents.hcl")); err != nil {
+		t.Skipf("worktree .rampart/ not present at %s (test must run from within the rampart worktree): %v",
+			worktreeRoot, err)
+	}
+
+	rampartBin := buildRampartForE2E(t)
+
+	// Fresh HOME so claude reads no cached state, doesn't touch the
+	// developer's real config dir, and shows the login prompt
+	// deterministically. /tmp keeps the session socket sun_path short.
+	homeDir := mustTempDir(t, "ramp-claude-home")
+	t.Setenv("HOME", homeDir)
+
+	// Point rampart's module search at the worktree's bundled assets,
+	// not at HOME/.local/share or ../share/rampart relative to the
+	// test binary. Without this override, `use "system/base"` from
+	// stoa/limited.hcl can't resolve and the test fails at policy
+	// load. The assets directory inside the worktree is the
+	// source-of-truth that `just install` deploys.
+	bundledAssets := filepath.Join(worktreeRoot, "code", "go", "cmd", "rampart", "assets")
+	if _, err := os.Stat(filepath.Join(bundledAssets, "modules")); err != nil {
+		t.Skipf("bundled module assets not found at %s: %v", bundledAssets, err)
+	}
+	t.Setenv("RAMPART_SHARE_DIR", bundledAssets)
+
+	socketPath := filepath.Join(mustTempDir(t, "ramp-claude-virtui"), "daemon.sock")
+	t.Setenv("VIRTUI_SOCKET", socketPath)
+	startVirtuiDaemon(t, virtuiBin, socketPath)
+
+	tmuxSocket := fmt.Sprintf("rampart-claude-test-%d", os.Getpid())
+	t.Cleanup(func() {
+		_ = exec.Command(tmuxBin, "-L", tmuxSocket, "kill-server").Run()
+	})
+
+	// virtui spawns the isolated tmux server. --dir pins the worktree
+	// root so the shell inside the pane (and the rampart we launch
+	// next) finds the worktree's .rampart/ via FindGitRoot.
+	sessionName := "rampart-claude"
+	sessionID := virtuiRun(t, virtuiBin, virtuiRunOpts{
+		dir:  worktreeRoot,
+		cols: 160,
+		rows: 50,
+		argv: []string{tmuxBin, "-L", tmuxSocket, "new-session", "-A", "-s", sessionName},
+	})
+
+	waitForTmuxPaneCount(t, tmuxBin, tmuxSocket, 1, 5*time.Second)
+	time.Sleep(500 * time.Millisecond)
+
+	// --mode permissive on darwin is log-only (the kernel enforces; the
+	// engine can't post-hoc undo a denial), but it ensures the engine
+	// doesn't queue interactive escalations that would block claude on
+	// startup. Pairs naturally with stoa/permissive (the broadest
+	// profile we ship) for a maximum-grants run.
+	cmd := fmt.Sprintf("%s --agent coder --profile stoa/permissive --mode permissive --no-tls-mitm -- %s\n",
+		rampartBin, claudeBin)
+	if out, err := exec.Command(virtuiBin, "exec", sessionID, cmd).CombinedOutput(); err != nil {
+		t.Fatalf("virtui exec rampart command: %v\n%s", err, out)
+	}
+
+	// Diagnostic dump on failure: capture rampart's log + the screen.
+	defer func() {
+		if t.Failed() {
+			t.Logf("agent pane screen at failure:\n%s", captureScreen(virtuiBin, sessionID))
+			logsDir := filepath.Join(homeDir, ".rampart", "logs")
+			if entries, _ := os.ReadDir(logsDir); len(entries) > 0 {
+				for _, e := range entries {
+					data, err := os.ReadFile(filepath.Join(logsDir, e.Name()))
+					if err != nil {
+						continue
+					}
+					t.Logf("rampart log %s:\n%s", e.Name(), data)
+				}
+			}
+		}
+	}()
+
+	// Wait up to 45s for claude's TUI to render. Generous because
+	// claude bootstraps slowly under the sandbox: Bun starts, every
+	// shared library and config file is gated by Seatbelt, and the
+	// network init does its own probe. We're looking for ANY signal
+	// that claude rendered its UI, accepting either the login prompt
+	// (fresh HOME, no cached token) or the main input area (caller's
+	// env had a usable token).
+	if !waitForAnyMarker(t, virtuiBin, sessionID, 45*time.Second, claudeReadyMarkers()) {
+		t.Fatal("claude never showed a recognisable startup screen — see screen dump above")
+	}
+
+	// Best-effort exit. claude's quit gesture is two consecutive ETX
+	// bytes (Ctrl-C twice), but on the first-run wizard claude may be
+	// waiting for a theme/login selection and won't honour the second
+	// Ctrl-C until the wizard is past. We don't assert clean shutdown
+	// here — the test's primary claim (claude rendered) is already
+	// satisfied; the t.Cleanup'd virtui kill will tear down anything
+	// the supervisor leaves behind.
+	for i := 0; i < 3; i++ {
+		if out, err := exec.Command(virtuiBin, "type", sessionID, "\x03").CombinedOutput(); err != nil {
+			t.Logf("virtui type ETX (best-effort): %v\n%s", err, out)
+			break
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+}
+
+// claudeReadyMarkers returns the disjunctive set of substrings, any of
+// which indicates claude's TUI is up. We accept multiple alternatives
+// because claude's startup screen depends on auth state, terminal
+// dimensions, and the build's current copy:
+//
+//   - "Welcome to Claude" — banner on first-run / not-yet-authed.
+//   - "Log in" / "Sign in" — login-flow CTA (variant: "/login" command).
+//   - "claude.ai" — the OAuth URL printed during login.
+//   - "/help" — input-prompt hint shown once authenticated.
+//   - "? for shortcuts" — same; alternate phrasing.
+//   - "Claude Code" — title bar (logged-in REPL).
+//
+// At least one of these must appear within the test's timeout, which
+// is enough to prove rampart got claude past Seatbelt's startup gate.
+func claudeReadyMarkers() []string {
+	return []string{
+		"Welcome to Claude",
+		"Log in",
+		"Sign in",
+		"/login",
+		"claude.ai",
+		"/help",
+		"? for shortcuts",
+		"Claude Code",
+	}
+}
+
+// waitForAnyMarker polls the rendered screen at 500ms intervals and
+// returns true the first time ANY substring in `markers` appears.
+// Returns false on timeout. Used when several alternative screen
+// states are valid — see claudeReadyMarkers for why.
+func waitForAnyMarker(t *testing.T, virtuiBin, sessionID string, timeout time.Duration, markers []string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+			screen := captureScreen(virtuiBin, sessionID)
+			for _, m := range markers {
+				if strings.Contains(screen, m) {
+					return true
+				}
+			}
+		}
+	}
 }
 
 // --- tmux helpers ---
