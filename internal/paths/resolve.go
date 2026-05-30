@@ -70,6 +70,40 @@ func Resolve(path string, ctx Context) (string, error) {
 	return resolved, nil
 }
 
+// ResolveNoSymlinks expands ~, ~user, and relative paths to absolute
+// paths but does NOT follow symlinks. Used by callers that want both
+// the pre-resolution path and the canonical resolved path in the
+// sandbox policy — Seatbelt sometimes matches against the syscall
+// path rather than the kernel-canonicalised vnode (lstat, some
+// security-framework probes), so emitting both forms is defensive.
+//
+// The output is filepath.Clean'd and (for tilde / relative inputs)
+// made absolute, but every symlink in the path is preserved as-is.
+func ResolveNoSymlinks(path string, ctx Context) (string, error) {
+	if strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("path contains null byte: %q", path)
+	}
+	if path == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	home, err := effectiveHome(ctx)
+	if err != nil {
+		return "", err
+	}
+	expanded, err := expandTilde(path, home)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(expanded) {
+		base := ctx.GitRoot
+		if base == "" {
+			base = home
+		}
+		expanded = filepath.Join(base, expanded)
+	}
+	return filepath.Clean(expanded), nil
+}
+
 // ResolveAll resolves a slice of paths, returning all resolved paths or
 // the first error encountered.
 func ResolveAll(paths []string, ctx Context) ([]string, error) {

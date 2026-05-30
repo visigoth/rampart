@@ -80,4 +80,8 @@ exec = [
   "/home/linuxbrew/.linuxbrew/bin/zsh",
   # The env helper most shebangs go through.
   "/usr/bin/env",
+  # macOS IO Registry probe — Bun (claude's runtime) shells out to
+  # this at startup for hardware fingerprinting (battery, model,
+  # serial). Inert on Linux (path doesn't exist).
+  "/usr/sbin/ioreg",
 ]

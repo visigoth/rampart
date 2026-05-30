@@ -100,26 +100,27 @@ func loadPolicy(flags *runFlags, startDir string) (*compiledPolicy, error) {
 // the tilde never gets expanded, the string prefix match fails, and
 // the user's broad ask silently drops the module's specific grant.
 //
-// Symlinks are resolved to their physical targets so the kernel
-// sandbox sees the same paths it grants.
+// Symlink handling: for each declared path we resolve via
+// paths.Resolve (which calls EvalSymlinks) and ALSO retain the
+// pre-resolution form if it differs. Both forms then participate in
+// the merge intersection and end up in the seatbelt policy. macOS
+// Seatbelt usually canonicalises vnode paths before matching rules,
+// but there are edge cases — operations checked against the path
+// passed to the syscall rather than the resolved vnode (lstat, some
+// security framework calls), and rules that themselves contain
+// non-canonical components. Emitting both forms is defensive and
+// cheap: paths that don't traverse a symlink resolve to themselves
+// and are deduplicated by the merge-time path-set logic.
 func resolveConfigPaths(agent *config.AgentConfig, profile *config.ProfileConfig, ctx paths.Context) error {
-	resolve := func(list []string, label string) ([]string, error) {
-		out, err := paths.ResolveAll(list, ctx)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", label, err)
-		}
-		return out, nil
-	}
-
 	var err error
-	if agent.Read, err = resolve(agent.Read, "agent.read"); err != nil {
+	if agent.Read, err = expandSymlinkPair(agent.Read, ctx, "agent.read"); err != nil {
 		return err
 	}
-	if agent.Write, err = resolve(agent.Write, "agent.write"); err != nil {
+	if agent.Write, err = expandSymlinkPair(agent.Write, ctx, "agent.write"); err != nil {
 		return err
 	}
 	// agent.Exec may contain ${VAR} placeholders that paths.Resolve must
-	// not interpret. Pass literal entries through resolve; pass
+	// not interpret. Pass literal entries through resolution; pass
 	// placeholders through unchanged.
 	resolvedExec := make([]string, 0, len(agent.Exec))
 	for _, e := range agent.Exec {
@@ -127,24 +128,69 @@ func resolveConfigPaths(agent *config.AgentConfig, profile *config.ProfileConfig
 			resolvedExec = append(resolvedExec, e)
 			continue
 		}
-		r, rerr := paths.Resolve(e, ctx)
-		if rerr != nil {
-			return fmt.Errorf("agent.exec: %w", rerr)
+		pair, perr := resolveSymlinkPair(e, ctx)
+		if perr != nil {
+			return fmt.Errorf("agent.exec: %w", perr)
 		}
-		resolvedExec = append(resolvedExec, r)
+		resolvedExec = append(resolvedExec, pair...)
 	}
 	agent.Exec = resolvedExec
 
-	if profile.Read, err = resolve(profile.Read, "profile.read"); err != nil {
+	if profile.Read, err = expandSymlinkPair(profile.Read, ctx, "profile.read"); err != nil {
 		return err
 	}
-	if profile.Write, err = resolve(profile.Write, "profile.write"); err != nil {
+	if profile.Write, err = expandSymlinkPair(profile.Write, ctx, "profile.write"); err != nil {
 		return err
 	}
-	if profile.Exec, err = resolve(profile.Exec, "profile.exec"); err != nil {
+	if profile.Exec, err = expandSymlinkPair(profile.Exec, ctx, "profile.exec"); err != nil {
 		return err
 	}
 	return nil
+}
+
+// resolveSymlinkPair returns the canonical (symlink-followed) form
+// of `p`, plus the pre-resolution absolute form when it differs. The
+// pre-resolution form is the input with tildes expanded and relative
+// paths joined to gitRoot/home, but WITHOUT EvalSymlinks — i.e., it
+// preserves whatever traversal-time path the user might exercise.
+// Returns one entry when both forms collapse to the same string.
+func resolveSymlinkPair(p string, ctx paths.Context) ([]string, error) {
+	canonical, err := paths.Resolve(p, ctx)
+	if err != nil {
+		return nil, err
+	}
+	noLink, err := paths.ResolveNoSymlinks(p, ctx)
+	if err != nil {
+		// If pre-symlink resolution fails (shouldn't happen — it's a
+		// strict subset of Resolve's work), fall back to the canonical
+		// form alone.
+		return []string{canonical}, nil
+	}
+	if noLink == canonical {
+		return []string{canonical}, nil
+	}
+	return []string{canonical, noLink}, nil
+}
+
+// expandSymlinkPair applies resolveSymlinkPair across a slice. Used
+// for read/write/exec lists in agents and profiles.
+func expandSymlinkPair(list []string, ctx paths.Context, label string) ([]string, error) {
+	out := make([]string, 0, len(list))
+	seen := make(map[string]struct{}, len(list))
+	for _, p := range list {
+		pair, err := resolveSymlinkPair(p, ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		for _, x := range pair {
+			if _, dup := seen[x]; dup {
+				continue
+			}
+			seen[x] = struct{}{}
+			out = append(out, x)
+		}
+	}
+	return out, nil
 }
 
 // resolvePolicyPaths expands every path entry in rp (Workdir, Read, Write,
