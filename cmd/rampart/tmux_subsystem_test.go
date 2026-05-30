@@ -31,7 +31,7 @@ func (f *fakeTmuxRunner) Run(args ...string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, args)
-	if len(args) >= 2 && args[0] == "tmux" && args[1] == "split-window" {
+	if subcommandOf(args) == "split-window" {
 		return f.splitOut, f.splitErr
 	}
 	if len(args) >= 2 && args[0] == "tput" {
@@ -47,16 +47,60 @@ func (f *fakeTmuxRunner) LookPath(name string) (string, error) {
 	return "", fmt.Errorf("%s: not found", name)
 }
 
-func (f *fakeTmuxRunner) called(prefix ...string) bool {
+// called returns true when any recorded invocation matches. The query is
+// matched against the tmux SUBCOMMAND (split-window, kill-pane, …) and
+// any extra args, ignoring `-S <socket>` / `-L <name>` flags that
+// tmux.go injects between the program name and the subcommand.
+func (f *fakeTmuxRunner) called(query ...string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	want := strings.Join(prefix, " ")
+	if len(query) == 0 {
+		return false
+	}
+	// Drop a leading "tmux" / "tput" from the query — we match starting
+	// at the subcommand.
+	if query[0] == "tmux" || query[0] == "tput" {
+		query = query[1:]
+		if len(query) == 0 {
+			return false
+		}
+	}
+	wantSub := query[0]
+	wantTail := strings.Join(query[1:], " ")
 	for _, c := range f.calls {
-		if strings.HasPrefix(strings.Join(c, " "), want) {
+		if subcommandOf(c) != wantSub {
+			continue
+		}
+		if wantTail == "" {
+			return true
+		}
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, wantTail) {
 			return true
 		}
 	}
 	return false
+}
+
+// subcommandOf returns the first non-flag, non-socket-argument token after
+// the program name in argv. Mirrors the same helper in tmux_test.go;
+// duplicated here to keep package boundaries clean.
+func subcommandOf(args []string) string {
+	if len(args) < 2 {
+		return ""
+	}
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if a == "-S" || a == "-L" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		return a
+	}
+	return ""
 }
 
 // TestTmuxPaneSubsystem_NameStable pins the diagnostic name.
@@ -136,12 +180,13 @@ func TestTmuxPaneSubsystem_SplitWindowKeepsAgentFocused(t *testing.T) {
 	defer r.mu.Unlock()
 	foundDFlag := false
 	for _, c := range r.calls {
-		if len(c) >= 2 && c[0] == "tmux" && c[1] == "split-window" {
-			joined := strings.Join(c, " ")
-			if strings.Contains(joined, " -d") {
-				foundDFlag = true
-				break
-			}
+		if subcommandOf(c) != "split-window" {
+			continue
+		}
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, " -d") {
+			foundDFlag = true
+			break
 		}
 	}
 	if !foundDFlag {

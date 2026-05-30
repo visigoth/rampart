@@ -80,6 +80,12 @@ type Pane struct {
 	// SessionName is non-empty when rampart created the session (cleanup needed).
 	SessionName string
 
+	// socket is the tmux server socket path the pane was created in,
+	// captured at Setup time from $TMUX. Subsequent pane operations
+	// (resize, kill) reach the same server by passing `-S <socket>`,
+	// since `tmux <cmd>` without -S talks to the DEFAULT server only.
+	socket string
+
 	cfg PaneConfig
 }
 
@@ -106,6 +112,30 @@ func (realRunner) LookPath(name string) (string, error) {
 	return exec.LookPath(name)
 }
 
+// parseTmuxSocket returns the socket path from a $TMUX env value. tmux
+// sets $TMUX to "<socket>,<server-pid>,<session-id>" for every process
+// running inside a pane; the first comma-separated field is the
+// absolute path to the server socket. Returns "" when $TMUX is unset
+// or malformed.
+//
+// Why this matters: `tmux <command>` without `-S` connects to the
+// default server at /tmp/tmux-<uid>/default. When rampart's host
+// process is running inside a NON-default server (e.g. one started
+// with `tmux -L name`), every tmux call from rampart must include
+// `-S <socket>` to reach the same server. Otherwise split-window and
+// other pane operations execute against the default server, where the
+// pane rampart is "in" doesn't exist — and the new pane materialises
+// in some unrelated session instead.
+func parseTmuxSocket(tmuxEnv string) string {
+	if tmuxEnv == "" {
+		return ""
+	}
+	if i := strings.IndexByte(tmuxEnv, ','); i > 0 {
+		return tmuxEnv[:i]
+	}
+	return ""
+}
+
 // Setup creates the rampart UI pane and returns a Pane handle.
 // If tmux is not installed, returns ErrTmuxNotFound; callers should fall back
 // to interactive-direct mode (TR117).
@@ -121,6 +151,22 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 	_ = tmuxBin
 
 	inTmux := os.Getenv("TMUX") != ""
+	// When rampart's parent shell is inside a tmux server other than
+	// the default one, every tmux invocation must include -S <socket>.
+	// See parseTmuxSocket for details. socketArgs is empty when we're
+	// not in tmux (the new-session branch starts a fresh server) so
+	// adding it unconditionally is safe.
+	var socketArgs []string
+	if sock := parseTmuxSocket(os.Getenv("TMUX")); sock != "" {
+		socketArgs = []string{"-S", sock}
+	}
+	tmuxCmd := func(args ...string) []string {
+		out := make([]string, 0, 1+len(socketArgs)+len(args))
+		out = append(out, "tmux")
+		out = append(out, socketArgs...)
+		out = append(out, args...)
+		return out
+	}
 
 	paneCmd := cfg.PaneCommand
 	if paneCmd == "" {
@@ -137,17 +183,17 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 			// "don't make it active"; tmux split-window -d below keeps focus
 			// on the agent pane so the user's keystrokes drive claude, not
 			// the watch pane.
-			out, err := r.Run("tmux", "new-window", "-P", "-F", "#{pane_id}")
+			out, err := r.Run(tmuxCmd("new-window", "-P", "-F", "#{pane_id}")...)
 			if err != nil {
 				return nil, fmt.Errorf("tmux new-window: %w", err)
 			}
 			mainPaneID := strings.TrimSpace(out)
 
-			out, err = r.Run("tmux", "split-window", "-v", "-d",
+			out, err = r.Run(tmuxCmd("split-window", "-v", "-d",
 				"-l", strconv.Itoa(idleLines),
 				"-t", mainPaneID,
 				"-P", "-F", "#{pane_id}",
-				paneCmd)
+				paneCmd)...)
 			if err != nil {
 				return nil, fmt.Errorf("tmux split-window (new-window): %w", err)
 			}
@@ -164,14 +210,14 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 			// the split lands in the wrong window and never appears for
 			// the user. $TMUX_PANE is set automatically by tmux for every
 			// process running inside a pane.
-			splitArgs := []string{"tmux", "split-window", "-v", "-d",
+			splitArgs := []string{"split-window", "-v", "-d",
 				"-l", strconv.Itoa(idleLines),
 				"-P", "-F", "#{pane_id}"}
 			if pane := os.Getenv("TMUX_PANE"); pane != "" {
 				splitArgs = append(splitArgs, "-t", pane)
 			}
 			splitArgs = append(splitArgs, paneCmd)
-			out, err := r.Run(splitArgs...)
+			out, err := r.Run(tmuxCmd(splitArgs...)...)
 			if err != nil {
 				return nil, fmt.Errorf("tmux split-window: %w", err)
 			}
@@ -216,15 +262,28 @@ func Setup(cfg PaneConfig) (*Pane, error) {
 	return &Pane{
 		PaneID:      paneID,
 		SessionName: sessionName,
+		socket:      parseTmuxSocket(os.Getenv("TMUX")),
 		cfg:         cfg,
 	}, nil
 }
 
+// tmuxArgs prepends "tmux [-S socket]" to args so subsequent pane
+// operations reach the same server the pane was created in.
+func (p *Pane) tmuxArgs(args ...string) []string {
+	out := make([]string, 0, 1+2+len(args))
+	out = append(out, "tmux")
+	if p.socket != "" {
+		out = append(out, "-S", p.socket)
+	}
+	out = append(out, args...)
+	return out
+}
+
 // Expand resizes the pane to the active height for an escalation prompt (API6.2).
 func (p *Pane) Expand() error {
-	_, err := p.cfg.getRunner().Run("tmux", "resize-pane",
+	_, err := p.cfg.getRunner().Run(p.tmuxArgs("resize-pane",
 		"-t", p.PaneID,
-		"-y", strconv.Itoa(p.cfg.activeLines()))
+		"-y", strconv.Itoa(p.cfg.activeLines()))...)
 	if err != nil {
 		return fmt.Errorf("tmux resize-pane expand: %w", err)
 	}
@@ -233,9 +292,9 @@ func (p *Pane) Expand() error {
 
 // Shrink resizes the pane back to idle height (API6.2).
 func (p *Pane) Shrink() error {
-	_, err := p.cfg.getRunner().Run("tmux", "resize-pane",
+	_, err := p.cfg.getRunner().Run(p.tmuxArgs("resize-pane",
 		"-t", p.PaneID,
-		"-y", strconv.Itoa(p.cfg.idleLines()))
+		"-y", strconv.Itoa(p.cfg.idleLines()))...)
 	if err != nil {
 		return fmt.Errorf("tmux resize-pane shrink: %w", err)
 	}
@@ -248,14 +307,14 @@ func (p *Pane) Close() error {
 	r := p.cfg.getRunner()
 	if p.SessionName != "" {
 		// Rampart created the session: kill the whole session (TR122).
-		_, err := r.Run("tmux", "kill-session", "-t", p.SessionName)
+		_, err := r.Run(p.tmuxArgs("kill-session", "-t", p.SessionName)...)
 		if err != nil {
 			return fmt.Errorf("tmux kill-session: %w", err)
 		}
 		p.cfg.logger().Info("tmux: killed session", "session", p.SessionName)
 	} else {
 		// Rampart joined an existing session: only kill our pane (TR123).
-		_, err := r.Run("tmux", "kill-pane", "-t", p.PaneID)
+		_, err := r.Run(p.tmuxArgs("kill-pane", "-t", p.PaneID)...)
 		if err != nil {
 			return fmt.Errorf("tmux kill-pane: %w", err)
 		}

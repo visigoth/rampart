@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/visigoth/rampart/internal/ca"
 	"github.com/visigoth/rampart/internal/proxy"
@@ -100,8 +101,20 @@ func runLaunch(ctx context.Context, flags *runFlags, args []string, stdin io.Rea
 	// Failures are recoverable: log and degrade to interactive-direct.
 	var recoverable []supervisor.Subsystem
 	if DetectMode(flags) == ModeInteractiveTmux {
+		// Spawn the watch pane via our own executable rather than the
+		// bare name "rampart". `tmux split-window` runs the command
+		// through the shell, which resolves the bare name against PATH.
+		// In production a PATH lookup finds the installed binary; in
+		// tests the binary lives in a tmpdir that isn't on PATH and the
+		// pane would immediately exit. Self-reference is the most
+		// faithful choice anyway — guarantees the watch runs the same
+		// build as the agent supervisor.
+		paneCmd := "rampart escalations --watch"
+		if self, err := os.Executable(); err == nil {
+			paneCmd = fmt.Sprintf("%s escalations --watch", shellQuote(self))
+		}
 		pane, err := tmux.Setup(tmux.PaneConfig{
-			PaneCommand: "rampart escalations --watch",
+			PaneCommand: paneCmd,
 			NewSession:  flags.newSession,
 			NewWindow:   flags.newWindow,
 		})
@@ -196,3 +209,12 @@ func startProxyForPolicy(cp *compiledPolicy) (*proxySubsystem, []string, error) 
 // (sandbox-exec on darwin, bwrap on linux) and whose argv tail re-execs the
 // target under the sandbox restrictions encoded in cp.Policy.
 var _ = exec.Cmd{}
+
+// shellQuote single-quotes s for safe inclusion in a shell command. Used
+// to embed os.Executable() paths in the tmux pane command, which tmux
+// hands to /bin/sh. Single-quotes disable interpretation of every
+// shell-special character except for the closing single-quote itself —
+// embedded single-quotes are escaped via the standard '\'' sequence.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
