@@ -2,6 +2,17 @@
 ;; Parameters injected via sandbox-exec -D: HOME, WORKDIR, TMPDIR, CLAUDE_BIN_DIR.
 (version 1)
 
+{{- if .Permissive}}
+;; Baseline: allow everything (--mode permissive). The kernel never
+;; EPERMs an unmatched op, so the agent runs unrestricted. Use this
+;; for "what does this tool actually touch" audits paired with
+;; `fs_usage -w -f filesys <pid>` or Console.app filtering on the
+;; `sandbox-exec` subsystem. Engine-side escalation is moot under
+;; (allow default) since no rule denies, but the policy-generated
+;; allow rules below still describe the intended grant surface for
+;; dry-run inspection.
+(allow default)
+{{- else}}
 ;; Baseline: deny everything, then carve out what is needed. (deny default)
 ;; returns EPERM on disallowed operations; hard kill of the child on policy
 ;; violations (FR23) is enforced at the supervisor layer (FT7) by reading
@@ -10,6 +21,7 @@
 ;; predicate fires regardless of subsequent allow rules, which would
 ;; prevent re-permitting policy-allowed paths.
 (deny default)
+{{- end}}
 
 ;; Allow the process to read its own process state.
 (allow process-info-pidinfo)

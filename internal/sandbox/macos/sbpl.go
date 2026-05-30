@@ -26,11 +26,30 @@ type sbplData struct {
 
 	// TestMode suppresses hard SIGKILL denial rules (FT17).
 	TestMode bool
+
+	// Permissive flips the SBPL baseline from `(deny default)` to
+	// `(allow default)` so the kernel never EPERMs an unmatched
+	// operation. Use to audit what an agent tries (via fs_usage or
+	// Console.app) without blocking it. Engine-side escalation and
+	// per-rule denial still apply for the few defensive rules that
+	// remain explicit even in permissive mode (process-exec on
+	// rampart itself, etc.).
+	Permissive bool
 }
 
 // CompileSBPL generates a Seatbelt profile string from a ResolvedPolicy.
 // testMode disables the hard SIGKILL denial rules so violations return EPERM
 // rather than killing the process — used for the interactive test REPL (FT17).
+//
+// Permissive mode (rp.Mode == "permissive") flips the SBPL baseline to
+// `(allow default)`. On macOS, Seatbelt's deny-by-default is enforced
+// in-kernel: by the time the userspace auth engine sees a violation
+// event, the syscall has already returned EPERM, so engine-side
+// "approve" is too late to unblock the child. Flipping the baseline
+// is the only way to make `--mode permissive` actually permissive on
+// darwin. The trade-off is that we lose the rampart-side audit trail
+// — pair with `fs_usage` or Console.app filtering on `sandbox-exec`
+// to enumerate what the agent actually touched.
 func CompileSBPL(rp *policy.ResolvedPolicy, testMode bool) (string, error) {
 	raw, err := EmbeddedSBPL.ReadFile("sbpl/base.sb.tmpl")
 	if err != nil {
@@ -75,6 +94,7 @@ func CompileSBPL(rp *policy.ResolvedPolicy, testMode bool) (string, error) {
 		AllowedDomains: rp.AllowedDomains,
 		UnixSockets:    rp.UnixSockets,
 		TestMode:       testMode,
+		Permissive:     rp.Mode == "permissive",
 	}
 
 	var buf bytes.Buffer
